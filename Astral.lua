@@ -154,8 +154,10 @@ do
         if getcustomasset then
             -- If the file is missing, attempt to download it now before calling
             -- getcustomasset so we don't silently use a bad/missing file.
+            -- Uses retries internally so a single slow request isn't treated
+            -- as a hard failure.
             if isfile and not isfile(AssetData.Path) then
-                local Ok = CustomImageManager.DownloadAsset(AssetName)
+                local Ok = CustomImageManager.DownloadAssetWithRetry(AssetName)
                 -- If download still failed, return the Roblox ID fallback without
                 -- caching, so the next call will retry the download.
                 if not Ok or not isfile(AssetData.Path) then
@@ -245,9 +247,49 @@ do
         return WriteSuccess, WriteError
     end
 
-    for AssetName, _ in CustomImageManagerAssets do
-        CustomImageManager.DownloadAsset(AssetName)
+    -- Wraps DownloadAsset with retries + backoff. A slow connection should
+    -- get more time, not be treated as a permanent failure on the first
+    -- attempt — only after MaxAttempts genuinely fail do we give up.
+    function CustomImageManager.DownloadAssetWithRetry(AssetName: string, ForceRedownload: boolean?, MaxAttempts: number?)
+        MaxAttempts = MaxAttempts or 3
+
+        local Ok, Err
+        for Attempt = 1, MaxAttempts do
+            Ok, Err = CustomImageManager.DownloadAsset(AssetName, ForceRedownload)
+            if Ok then
+                return true
+            end
+
+            if Attempt < MaxAttempts then
+                task.wait(0.75 * Attempt)
+            end
+        end
+
+        return false, Err
     end
+
+    -- Kick off all built-in asset downloads in parallel (so total wait time
+    -- isn't the sum of every asset's latency) and block until they've all
+    -- finished or a generous overall timeout elapses. This is what makes
+    -- Library construction below wait for assets/icons to actually be ready
+    -- instead of racing ahead and falling back to raw Roblox ids just
+    -- because a download was still in-flight.
+    local PendingAssetDownloads = 0
+    for AssetName, _ in CustomImageManagerAssets do
+        PendingAssetDownloads += 1
+        task.spawn(function()
+            CustomImageManager.DownloadAssetWithRetry(AssetName)
+            PendingAssetDownloads -= 1
+        end)
+    end
+
+    local AssetWaitStart = os.clock()
+    local AssetWaitTimeout = 20 -- seconds; generous ceiling so we don't hang forever
+    while PendingAssetDownloads > 0 and (os.clock() - AssetWaitStart) < AssetWaitTimeout do
+        task.wait(0.05)
+    end
+
+    CustomImageManager.AssetsLoaded = (PendingAssetDownloads == 0)
 end
 
 local Library = {
@@ -1094,11 +1136,33 @@ type IconModule = {
     GetAsset: (Name: string) -> Icon?,
 }
 
-local FetchIcons, Icons = pcall(function()
-    return (loadstring(
-        game:HttpGet("https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua")
-    ) :: () -> IconModule)()
-end)
+-- Fetches the Lucide icon module with retries so a single slow/aborted
+-- HttpGet doesn't permanently fall back to raw Roblox asset ids. This blocks
+-- (with a bounded number of attempts) until it either succeeds or genuinely
+-- exhausts its retries, instead of failing on the first slow attempt.
+local FetchIcons, Icons
+do
+    local IconsSourceURL = "https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua"
+    local MaxAttempts = 4
+
+    for Attempt = 1, MaxAttempts do
+        FetchIcons, Icons = pcall(function()
+            local Source = game:HttpGet(IconsSourceURL)
+            assert(type(Source) == "string" and #Source > 0, "empty icon module response")
+            return (loadstring(Source) :: () -> IconModule)()
+        end)
+
+        if FetchIcons and Icons then
+            break
+        end
+
+        if Attempt < MaxAttempts then
+            -- Backoff before retrying; a slow connection just needs more time,
+            -- not an immediate fallback.
+            task.wait(0.75 * Attempt)
+        end
+    end
+end
 
 function Library:GetIcon(IconName: string)
     if not FetchIcons then
