@@ -154,10 +154,8 @@ do
         if getcustomasset then
             -- If the file is missing, attempt to download it now before calling
             -- getcustomasset so we don't silently use a bad/missing file.
-            -- Uses retries internally so a single slow request isn't treated
-            -- as a hard failure.
             if isfile and not isfile(AssetData.Path) then
-                local Ok = CustomImageManager.DownloadAssetWithRetry(AssetName)
+                local Ok = CustomImageManager.DownloadAsset(AssetName)
                 -- If download still failed, return the Roblox ID fallback without
                 -- caching, so the next call will retry the download.
                 if not Ok or not isfile(AssetData.Path) then
@@ -247,49 +245,9 @@ do
         return WriteSuccess, WriteError
     end
 
-    -- Wraps DownloadAsset with retries + backoff. A slow connection should
-    -- get more time, not be treated as a permanent failure on the first
-    -- attempt — only after MaxAttempts genuinely fail do we give up.
-    function CustomImageManager.DownloadAssetWithRetry(AssetName: string, ForceRedownload: boolean?, MaxAttempts: number?)
-        MaxAttempts = MaxAttempts or 3
-
-        local Ok, Err
-        for Attempt = 1, MaxAttempts do
-            Ok, Err = CustomImageManager.DownloadAsset(AssetName, ForceRedownload)
-            if Ok then
-                return true
-            end
-
-            if Attempt < MaxAttempts then
-                task.wait(0.75 * Attempt)
-            end
-        end
-
-        return false, Err
-    end
-
-    -- Kick off all built-in asset downloads in parallel (so total wait time
-    -- isn't the sum of every asset's latency) and block until they've all
-    -- finished or a generous overall timeout elapses. This is what makes
-    -- Library construction below wait for assets/icons to actually be ready
-    -- instead of racing ahead and falling back to raw Roblox ids just
-    -- because a download was still in-flight.
-    local PendingAssetDownloads = 0
     for AssetName, _ in CustomImageManagerAssets do
-        PendingAssetDownloads += 1
-        task.spawn(function()
-            CustomImageManager.DownloadAssetWithRetry(AssetName)
-            PendingAssetDownloads -= 1
-        end)
+        CustomImageManager.DownloadAsset(AssetName)
     end
-
-    local AssetWaitStart = os.clock()
-    local AssetWaitTimeout = 20 -- seconds; generous ceiling so we don't hang forever
-    while PendingAssetDownloads > 0 and (os.clock() - AssetWaitStart) < AssetWaitTimeout do
-        task.wait(0.05)
-    end
-
-    CustomImageManager.AssetsLoaded = (PendingAssetDownloads == 0)
 end
 
 local Library = {
@@ -1136,33 +1094,30 @@ type IconModule = {
     GetAsset: (Name: string) -> Icon?,
 }
 
--- Fetches the Lucide icon module with retries so a single slow/aborted
--- HttpGet doesn't permanently fall back to raw Roblox asset ids. This blocks
--- (with a bounded number of attempts) until it either succeeds or genuinely
--- exhausts its retries, instead of failing on the first slow attempt.
-local FetchIcons, Icons
-do
-    local IconsSourceURL = "https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua"
-    local MaxAttempts = 4
+local FetchIcons, Icons = pcall(function()
+    local SourceCode = game:HttpGet(
+        "https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua"
+    )
 
-    for Attempt = 1, MaxAttempts do
-        FetchIcons, Icons = pcall(function()
-            local Source = game:HttpGet(IconsSourceURL)
-            assert(type(Source) == "string" and #Source > 0, "empty icon module response")
-            return (loadstring(Source) :: () -> IconModule)()
-        end)
+    -- Some executors implement getcustomasset() but it silently returns an empty
+    -- string instead of a valid content id (no error thrown, so the module's own
+    -- broken-detection via pcall doesn't catch it). Worse, reassigning
+    -- getcustomasset = nil in this scope does NOT propagate into the loadstring'd
+    -- chunk on this executor (each loadstring gets its own fresh environment), so
+    -- we patch the fetched SOURCE TEXT directly: force both spritesheet entries to
+    -- always use the static rbxassetid:// fallback instead of calling
+    -- getcustomasset() at all. This is the only Url source confirmed to render.
+    SourceCode = SourceCode:gsub(
+        'if%s+getcustomasset%s+and%s+not%s+IS_GETCUSTOMASSET_BROKEN%s+then%s+getcustomasset%("lucide%-icons/1%.png"%)%s+else%s+"rbxassetid://89707116417717"',
+        '"rbxassetid://89707116417717"'
+    )
+    SourceCode = SourceCode:gsub(
+        'if%s+getcustomasset%s+and%s+not%s+IS_GETCUSTOMASSET_BROKEN%s+then%s+getcustomasset%("lucide%-icons/2%.png"%)%s+else%s+"rbxassetid://101599128715386"',
+        '"rbxassetid://101599128715386"'
+    )
 
-        if FetchIcons and Icons then
-            break
-        end
-
-        if Attempt < MaxAttempts then
-            -- Backoff before retrying; a slow connection just needs more time,
-            -- not an immediate fallback.
-            task.wait(0.75 * Attempt)
-        end
-    end
-end
+    return (loadstring(SourceCode) :: () -> IconModule)()
+end)
 
 function Library:GetIcon(IconName: string)
     if not FetchIcons then
@@ -1170,9 +1125,14 @@ function Library:GetIcon(IconName: string)
     end
 
     local Success, Icon = pcall(Icons.GetAsset, IconName)
-    if not Success then
+    if not Success or not Icon then
         return
     end
+
+    if typeof(Icon.Url) ~= "string" or Icon.Url == "" then
+        return
+    end
+
     return Icon
 end
 
@@ -10216,7 +10176,7 @@ function Library:CreateWindow(WindowInfo)
             local AbsPos  = SearchBox.AbsolutePosition
             local AbsSize = SearchBox.AbsoluteSize
             local MainAbs = MainFrame.AbsolutePosition
-            SearchOverlay.Size     = UDim2.new(0, AbsSize.X + 4, 0, 400)
+            SearchOverlay.Size     = UDim2.new(0, AbsSize.X + 3, 0, 400)
             SearchOverlay.Position = UDim2.fromOffset(
                 AbsPos.X - MainAbs.X,
                 AbsPos.Y - MainAbs.Y + AbsSize.Y + 4
@@ -11159,7 +11119,7 @@ local ThemeManager = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/inCythe/Astral/refs/heads/main/addons/ThemeManager.lua"
 ))()
 
-SaveManager:SetLibrary(Library)
+--SaveManager:SetLibrary(Library)
 ThemeManager:SetLibrary(Library)
 
 -- Keep theme colours out of config saves so they are managed independently.
