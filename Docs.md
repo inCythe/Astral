@@ -317,12 +317,12 @@ Key tabs use a centered, single-column scrolling layout. The searchbar is disabl
 
 ### AddSection
 
-Adds a boxed section panel to the left or right column of a tab.
+Adds a boxed section panel to a tab.
 
 ```lua
 local Section = Tab:AddSection({
     Name     = "Settings",   -- Section header text
-    Side     = 1,            -- 1 = left column, 2 = right column
+    Side     = 1,            -- 1 = left column, 2 = right column, omitted/nil = full-width (one column)
     IconName = "settings",   -- Optional icon shown next to the header
 })
 
@@ -330,6 +330,10 @@ local Section = Tab:AddSection({
 local LeftSection  = Tab:AddLeftSection("Settings")
 local RightSection = Tab:AddRightSection("Settings", "settings")  -- icon optional
 ```
+
+Sections are laid out top-to-bottom in the order they're added. Omitting `Side` (or any value other than `1`/`2`) creates a full-width, one-column section instead of placing it in the left/right two-column row. The first time a left or right section is added, a single two-column row is created at that point in the layout; every subsequent left/right section is appended into that same row (left column top-to-bottom, then right column top-to-bottom), while full-width sections added before or after it keep their own creation order above/below the row.
+
+The global searchbar/overlay (see [Window API](#4-window-api)) lists matching sections and elements in this same visual order — full-width sections in creation order, then the entire left column top-to-bottom, then the entire right column top-to-bottom — rather than an arbitrary order, so results always read top-to-bottom, left-to-right just like the tab itself.
 
 ### AddSectionGroup (Tabbed Section Box)
 

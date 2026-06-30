@@ -7101,7 +7101,7 @@ function Library:CreateWindow(WindowInfo)
 
         New("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
-            HorizontalAlignment = Enum.HorizontalAlignment.Left,
+            HorizontalAlignment = Enum.HorizontalAlignment.Right,
             VerticalAlignment = Enum.VerticalAlignment.Center,
             Padding = UDim.new(0, 8),
             Parent = RightWrapper,
@@ -8018,8 +8018,13 @@ function Library:CreateWindow(WindowInfo)
         local TabIcon
 
         local TabContainer
+        local TabScroll
+        local ColumnsRow
         local ColumnLeft
         local ColumnRight
+        local ColumnFull
+        local GetSectionParent
+        local NextOrder = 0
 
         Icon = Library:GetCustomIcon(Icon)
         do
@@ -8112,72 +8117,100 @@ function Library:CreateWindow(WindowInfo)
                 Parent = Container,
             })
 
-            ColumnLeft = New("ScrollingFrame", {
+            -- Single scrolling container shared by full-width sections and the
+            -- left/right two-column row. Everything is laid out top-to-bottom
+            -- through one UIListLayout, sorted by LayoutOrder, so full-width
+            -- sections and the two-column row push each other around in the
+            -- order they were actually added instead of living in separate,
+            -- visually-overlapping scroll regions.
+            TabScroll = New("ScrollingFrame", {
                 AutomaticCanvasSize = Enum.AutomaticSize.Y,
                 BackgroundTransparency = 1,
                 CanvasSize = UDim2.fromScale(0, 0),
                 ScrollBarImageTransparency = 1,
                 ScrollBarThickness = 0,
-                Size = UDim2.new(0.5, -3, 1, 0),
+                Size = UDim2.fromScale(1, 1),
                 Parent = TabContainer,
             })
-            New("UIListLayout", {
+            local TabScrollList = New("UIListLayout", {
                 Padding = UDim.new(0, 2),
-                Parent = ColumnLeft,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Parent = TabScroll,
             })
             New("UIPadding", {
                 PaddingBottom = UDim.new(0, 8),
                 PaddingLeft = UDim.new(0, 2),
                 PaddingRight = UDim.new(0, 2),
                 PaddingTop = UDim.new(0, 2),
-                Parent = ColumnLeft,
+                Parent = TabScroll,
             })
             do
                 New("Frame", {
                     BackgroundTransparency = 1,
                     LayoutOrder = -1,
-                    Parent = ColumnLeft,
+                    Parent = TabScroll,
                 })
                 New("Frame", {
                     BackgroundTransparency = 1,
-                    LayoutOrder = 1,
-                    Parent = ColumnLeft,
+                    LayoutOrder = 2147483646,
+                    Parent = TabScroll,
                 })
             end
 
-            ColumnRight = New("ScrollingFrame", {
-                AnchorPoint = Vector2.new(1, 0),
-                AutomaticCanvasSize = Enum.AutomaticSize.Y,
-                BackgroundTransparency = 1,
-                CanvasSize = UDim2.fromScale(0, 0),
-                Position = UDim2.fromScale(1, 0),
-                ScrollBarImageTransparency = 1,
-                ScrollBarThickness = 0,
-                Size = UDim2.new(0.5, -3, 1, 0),
-                Parent = TabContainer,
-            })
-            New("UIListLayout", {
-                Padding = UDim.new(0, 2),
-                Parent = ColumnRight,
-            })
-            New("UIPadding", {
-                PaddingBottom = UDim.new(0, 8),
-                PaddingLeft = UDim.new(0, 2),
-                PaddingRight = UDim.new(0, 2),
-                PaddingTop = UDim.new(0, 2),
-                Parent = ColumnRight,
-            })
-            do
-                New("Frame", {
-                    BackgroundTransparency = 1,
-                    LayoutOrder = -1,
-                    Parent = ColumnRight,
-                })
-                New("Frame", {
-                    BackgroundTransparency = 1,
-                    LayoutOrder = 1,
-                    Parent = ColumnRight,
-                })
+            -- ColumnFull is just the shared scroll container itself: full-width
+            -- sections (Tab:AddSection / Tab:AddSectionGroup with no Side) are
+            -- parented straight into it.
+            ColumnFull = TabScroll
+
+            -- The two-column row is created lazily, the first time a Side = 1
+            -- or Side = 2 section/group is requested, and is inserted into the
+            -- shared list at whatever order it was first needed -- so anything
+            -- added before it stays above, and anything added after stays below.
+            GetSectionParent = function(Side)
+                if Side ~= 1 and Side ~= 2 then
+                    NextOrder = NextOrder + 1
+                    return ColumnFull
+                end
+
+                if not ColumnsRow then
+                    ColumnsRow = New("Frame", {
+                        AutomaticSize = Enum.AutomaticSize.Y,
+                        BackgroundTransparency = 1,
+                        LayoutOrder = NextOrder,
+                        Size = UDim2.new(1, 0, 0, 0),
+                        Parent = TabScroll,
+                    })
+
+                    ColumnLeft = New("Frame", {
+                        AutomaticSize = Enum.AutomaticSize.Y,
+                        BackgroundTransparency = 1,
+                        Size = UDim2.new(0.5, -3, 0, 0),
+                        Parent = ColumnsRow,
+                    })
+                    New("UIListLayout", {
+                        Padding = UDim.new(0, 2),
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                        Parent = ColumnLeft,
+                    })
+
+                    ColumnRight = New("Frame", {
+                        AnchorPoint = Vector2.new(1, 0),
+                        AutomaticSize = Enum.AutomaticSize.Y,
+                        BackgroundTransparency = 1,
+                        Position = UDim2.fromScale(1, 0),
+                        Size = UDim2.new(0.5, -3, 0, 0),
+                        Parent = ColumnsRow,
+                    })
+                    New("UIListLayout", {
+                        Padding = UDim.new(0, 2),
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                        Parent = ColumnRight,
+                    })
+
+                    NextOrder = NextOrder + 1
+                end
+
+                return Side == 1 and ColumnLeft or ColumnRight
             end
         end
 
@@ -8271,12 +8304,12 @@ function Library:CreateWindow(WindowInfo)
         --// Tab Table \\--
         local Tab = {
             Sections = {},
+            SectionOrder = {},
             SectionGroups = {},
             ConditionalSections = {},
             Description = Description,
             Sides = {
-                ColumnLeft,
-                ColumnRight,
+                TabScroll,
             },
             WarningBox = {
                 IsNormal = false,
@@ -8362,8 +8395,8 @@ function Library:CreateWindow(WindowInfo)
         function Tab:RefreshSides()
             local Offset = WarningBoxHolder.Visible and WarningBox.Size.Y.Offset + 8 or 0
             for _, Side in Tab.Sides do
-                Side.Position = UDim2.new(Side.Position.X.Scale, 0, 0, Offset)
-                Side.Size = UDim2.new(0.5, -3, 1, -Offset)
+                Side.Position = UDim2.new(0, 0, 0, Offset)
+                Side.Size = UDim2.new(1, 0, 1, -Offset)
             end
         end
 
@@ -8392,12 +8425,19 @@ function Library:CreateWindow(WindowInfo)
             Tab:RefreshSides()
         end
 
-        function Tab:AddSection(Info)
+        function Tab:AddSection(NameOrInfo, IconName)
+            local Info
+            if typeof(NameOrInfo) == "table" then
+                Info = NameOrInfo
+            else
+                Info = { Name = NameOrInfo, IconName = IconName }
+            end
+
             local BoxHolder = New("Frame", {
                 AutomaticSize = Enum.AutomaticSize.Y,
                 BackgroundTransparency = 1,
                 Size = UDim2.fromScale(1, 0),
-                Parent = Info.Side == 1 and ColumnLeft or ColumnRight,
+                Parent = GetSectionParent(Info.Side),
             })
             New("UIListLayout", {
                 Padding = UDim.new(0, 8),
@@ -8580,7 +8620,9 @@ function Library:CreateWindow(WindowInfo)
             setmetatable(Section, BaseSection)
 
             Section:Resize()
+            Section.Side = Info.Side
             Tab.Sections[Info.Name] = Section
+            table.insert(Tab.SectionOrder, { Name = Info.Name, Side = Info.Side })
 
             return Section
         end
@@ -8593,12 +8635,19 @@ function Library:CreateWindow(WindowInfo)
             return Tab:AddSection({ Side = 2, Name = Name, IconName = IconName })
         end
 
-        function Tab:AddSectionGroup(Info)
+        function Tab:AddSectionGroup(NameOrInfo)
+            local Info
+            if typeof(NameOrInfo) == "table" then
+                Info = NameOrInfo
+            else
+                Info = { Name = NameOrInfo }
+            end
+
             local BoxHolder = New("Frame", {
                 AutomaticSize = Enum.AutomaticSize.Y,
                 BackgroundTransparency = 1,
                 Size = UDim2.fromScale(1, 0),
-                Parent = Info.Side == 1 and ColumnLeft or ColumnRight,
+                Parent = GetSectionParent(Info.Side),
             })
             New("UIListLayout", {
                 Padding = UDim.new(0, 6),
@@ -10217,7 +10266,54 @@ function Library:CreateWindow(WindowInfo)
                 local Tab        = TabEntry.Tab
                 local TabMatches = {}
 
-                for SectionName, Section in Tab.Sections do
+                -- Tab.Sections is a hash map (unordered), so iterating it directly
+                -- produces an arbitrary order that doesn't match the actual on-screen
+                -- layout (single-column/full-width sections would randomly end up
+                -- anywhere, often last). Tab.SectionOrder records the order sections
+                -- were actually created in, along with their Side (1 = left column,
+                -- 2 = right column, nil = full-width/one-column). Mirror the real
+                -- layout: full-width sections keep their creation order, and the
+                -- first time a left/right section appears we splice in the *entire*
+                -- two-column block (every left section top-to-bottom, then every
+                -- right section top-to-bottom) at that point, exactly matching
+                -- GetSectionParent's behaviour when the columns row is built.
+                local OrderedSections = {}
+                if Tab.SectionOrder then
+                    local LeftSections, RightSections = {}, {}
+                    local ColumnsSpliced = false
+
+                    for _, Entry in Tab.SectionOrder do
+                        if Entry.Side == 1 then
+                            table.insert(LeftSections, Entry.Name)
+                        elseif Entry.Side == 2 then
+                            table.insert(RightSections, Entry.Name)
+                        end
+                    end
+
+                    for _, Entry in Tab.SectionOrder do
+                        if Entry.Side == 1 or Entry.Side == 2 then
+                            if not ColumnsSpliced then
+                                ColumnsSpliced = true
+                                for _, N in LeftSections do
+                                    table.insert(OrderedSections, N)
+                                end
+                                for _, N in RightSections do
+                                    table.insert(OrderedSections, N)
+                                end
+                            end
+                        else
+                            table.insert(OrderedSections, Entry.Name)
+                        end
+                    end
+                else
+                    for SectionName in Tab.Sections do
+                        table.insert(OrderedSections, SectionName)
+                    end
+                end
+
+                for _, SectionName in OrderedSections do
+                    local Section = Tab.Sections[SectionName]
+                    if not Section then continue end
                     local SectionMatches = not Filtering or SectionName:lower():match(Search)
                     local ElMatches = {}
                     for _, Info in Section.Elements do
@@ -11146,7 +11242,7 @@ local TabLabels    = SecElements:AddTab({ Name = "Labels",    Icon = "align-left
 local TabColors    = SecAddons:AddTab({ Name = "Colors",    Icon = "palette",        Description = "ColorPicker on toggles and labels" })
 local TabKeys      = SecAddons:AddTab({ Name = "Keybinds",  Icon = "key",            Description = "KeyPicker modes: Toggle, Hold, Press, Always" })
 
-local TabSections  = SecLayout:AddTab({ Name = "Sections",  Icon = "layout",         Description = "Left & right sections" })
+local TabSections  = SecLayout:AddTab({ Name = "Sections",  Icon = "layout",         Description = "Full-width & left/right sections" })
 local TabTabboxes  = SecLayout:AddTab({ Name = "Tabboxes",  Icon = "box",            Description = "SectionGroups (collapsible tabboxes)" })
 
 local TabRichText  = SecShowcase:AddTab({ Name = "Rich Text",     Icon = "type",          Description = "Inline rich text formatting in labels, buttons and tooltips" })
@@ -11877,10 +11973,15 @@ do
 end
 
 -- ================================================================
--- TAB: SECTIONS (left/right layout demo)
+-- TAB: SECTIONS (full-width + left/right layout demo)
 -- ================================================================
 do
-    -- Two full left sections stacked
+    -- Plain AddSection (no Side) spans the full width of the tab.
+    local Full = TabSections:AddSection("Full-Width Section", "rows")
+    Toggles.Sec_Full1 = Full:AddToggle("Sec_Full1", { Text = "Toggle in the full-width section", Default = false })
+    Options.Sec_Full2 = Full:AddSlider("Sec_Full2", { Text = "Slider in the full-width section", Default = 50, Min = 0, Max = 100, Rounding = 0 })
+
+    -- AddLeftSection / AddRightSection split the tab into two columns.
     local LA = TabSections:AddLeftSection("Left Section A", "layers")
     local LB = TabSections:AddLeftSection("Left Section B", "list")
     local RA = TabSections:AddRightSection("Right Section A", "columns")
