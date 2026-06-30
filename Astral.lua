@@ -11119,7 +11119,7 @@ local ThemeManager = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/inCythe/Astral/refs/heads/main/addons/ThemeManager.lua"
 ))()
 
---SaveManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
 ThemeManager:SetLibrary(Library)
 
 -- Keep theme colours out of config saves so they are managed independently.
