@@ -410,9 +410,18 @@ local Templates = {
         ShowCustomCursor = false,
         Font = Enum.Font.GothamMedium,
         ToggleKeybind = Enum.KeyCode.RightControl,
-        
-        ShowMobileButtons = true,
-        MobileButtonsSide = "Left",
+
+        -- Floating draggable toggle bubble (chat-head style). Shows/hides the
+        -- window on tap and magnets to the nearest screen edge when dragged.
+        Bubble = nil,                        -- default: nil (auto -- shown only on mobile). true/false forces it on any platform.
+        BubbleSide = "Right",                -- default: "Right" -- starting side, and the side it magnets back to. "Left" or "Right".
+        BubbleIcon = "menu",                 -- default: "menu" -- Lucide icon name or custom asset id. nil falls back to the window title's first letter.
+        BubbleIconColor = nil,               -- default: nil -- Color3. nil uses Scheme.AccentColor.
+        BubbleColor = nil,                   -- default: nil -- Color3. nil uses Scheme.MainColor.
+        BubbleSize = UDim2.fromOffset(50, 50),  -- default: UDim2.fromOffset(50, 50)
+        BubbleCornerRadius = 25,             -- default: 25 -- half of BubbleSize for a full circle; lower for rounded-square bubbles.
+        BubblePadding = 12,                  -- default: 12 -- inset between the bubble edge and its icon/letter.
+        BubbleMargin = 8,                    -- default: 8 -- distance kept from the screen edges when snapped.
 
         UnlockMouseWhileOpen = true,
 
@@ -1094,30 +1103,143 @@ type IconModule = {
     GetAsset: (Name: string) -> Icon?,
 }
 
+-- Mirrors for the Lucide icon-registry source module. Tried in order; the
+-- first one that returns non-empty content wins. Add/re-order URLs here if
+-- a mirror goes down.
+local LUCIDE_SOURCE_MIRRORS = {
+    "https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua",
+    "https://cdn.jsdelivr.net/gh/deividcomsono/lucide-roblox-direct@main/source.lua",
+}
+
+local LUCIDE_CACHE_FILE = "astral-lucide-source.lua"
+
+-- Some executors expose different names for the HTTP function (or omit
+-- game:HttpGet entirely). Try every method available in this environment
+-- and fall through to the next one on failure instead of hard-erroring.
+local function HttpGetAny(Url: string): (boolean, string?)
+    local Methods = {}
+
+    if game and typeof(game.HttpGet) == "function" then
+        table.insert(Methods, function()
+            return game:HttpGet(Url)
+        end)
+    end
+
+    if typeof(http_request) == "function" then
+        table.insert(Methods, function()
+            local Response = http_request({ Url = Url, Method = "GET" })
+            return Response and Response.Body
+        end)
+    end
+
+    if typeof(request) == "function" then
+        table.insert(Methods, function()
+            local Response = request({ Url = Url, Method = "GET" })
+            return Response and Response.Body
+        end)
+    end
+
+    if syn and typeof(syn.request) == "function" then
+        table.insert(Methods, function()
+            local Response = syn.request({ Url = Url, Method = "GET" })
+            return Response and Response.Body
+        end)
+    end
+
+    if typeof(fluxus_request) == "function" then
+        table.insert(Methods, function()
+            local Response = fluxus_request({ Url = Url, Method = "GET" })
+            return Response and Response.Body
+        end)
+    end
+
+    for _, Method in Methods do
+        local Success, Result = pcall(Method)
+        if Success and typeof(Result) == "string" and #Result > 0 then
+            return true, Result
+        end
+    end
+
+    return false, nil
+end
+
+-- Some executors implement getcustomasset() but it silently returns an empty
+-- string instead of a valid content id (no error thrown, so the module's own
+-- broken-detection via pcall doesn't catch it). Worse, reassigning
+-- getcustomasset = nil in this scope does NOT propagate into the loadstring'd
+-- chunk on this executor (each loadstring gets its own fresh environment), so
+-- we patch the fetched SOURCE TEXT directly: force both spritesheet entries to
+-- always use the static rbxassetid:// fallback instead of calling
+-- getcustomasset() at all. This is the only Url source confirmed to render.
+--
+-- IMPORTANT: this is done GENERICALLY (matching the surrounding code shape,
+-- not a specific hardcoded asset id) because the upstream repo periodically
+-- re-uploads the spritesheets, which changes the fallback rbxassetid on every
+-- update. A patch pinned to an exact id silently stops matching (no error,
+-- gsub just does nothing) the moment that happens, which is what was making
+-- icons quietly stop loading.
+local function PatchLucideSource(SourceCode: string): (string, number)
+    return SourceCode:gsub(
+        'if%s+getcustomasset%s+and%s+not%s+IS_GETCUSTOMASSET_BROKEN%s+then%s+getcustomasset%("lucide%-icons/%d%.png"%)%s+else%s+("rbxassetid://%d+")',
+        "%1"
+    )
+end
+
 local FetchIcons, Icons = pcall(function()
-    local SourceCode = game:HttpGet(
-        "https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua"
-    )
+    local SourceCode, UsedCache = nil, false
 
-    -- Some executors implement getcustomasset() but it silently returns an empty
-    -- string instead of a valid content id (no error thrown, so the module's own
-    -- broken-detection via pcall doesn't catch it). Worse, reassigning
-    -- getcustomasset = nil in this scope does NOT propagate into the loadstring'd
-    -- chunk on this executor (each loadstring gets its own fresh environment), so
-    -- we patch the fetched SOURCE TEXT directly: force both spritesheet entries to
-    -- always use the static rbxassetid:// fallback instead of calling
-    -- getcustomasset() at all. This is the only Url source confirmed to render.
-    SourceCode = SourceCode:gsub(
-        'if%s+getcustomasset%s+and%s+not%s+IS_GETCUSTOMASSET_BROKEN%s+then%s+getcustomasset%("lucide%-icons/1%.png"%)%s+else%s+"rbxassetid://89707116417717"',
-        '"rbxassetid://89707116417717"'
-    )
-    SourceCode = SourceCode:gsub(
-        'if%s+getcustomasset%s+and%s+not%s+IS_GETCUSTOMASSET_BROKEN%s+then%s+getcustomasset%("lucide%-icons/2%.png"%)%s+else%s+"rbxassetid://101599128715386"',
-        '"rbxassetid://101599128715386"'
-    )
+    for _, Url in LUCIDE_SOURCE_MIRRORS do
+        local Success, Result = HttpGetAny(Url)
+        if Success then
+            SourceCode = Result
+            break
+        end
+    end
 
-    return (loadstring(SourceCode) :: () -> IconModule)()
+    -- Every mirror + every HTTP method failed (offline, firewalled, etc).
+    -- Fall back to whatever we last managed to fetch successfully, if this
+    -- executor supports persistent file IO.
+    if not SourceCode and isfile and readfile then
+        local Success, Cached = pcall(function()
+            if isfile(LUCIDE_CACHE_FILE) then
+                return readfile(LUCIDE_CACHE_FILE)
+            end
+            return nil
+        end)
+        if Success and typeof(Cached) == "string" and #Cached > 0 then
+            SourceCode = Cached
+            UsedCache = true
+        end
+    end
+
+    if not SourceCode then
+        return nil
+    end
+
+    local PatchedSource = PatchLucideSource(SourceCode)
+
+    -- Cache the freshly-fetched (unpatched) source so a future session can
+    -- still load icons even if every mirror is unreachable at that time.
+    if not UsedCache and writefile then
+        pcall(writefile, LUCIDE_CACHE_FILE, SourceCode)
+    end
+
+    local CompileSuccess, Compiled = pcall(loadstring, PatchedSource)
+    if not CompileSuccess or typeof(Compiled) ~= "function" then
+        return nil
+    end
+
+    local RunSuccess, Module = pcall(Compiled)
+    if not RunSuccess then
+        return nil
+    end
+
+    return Module :: IconModule
 end)
+
+if FetchIcons and not Icons then
+    FetchIcons = false
+end
 
 function Library:GetIcon(IconName: string)
     if not FetchIcons then
@@ -7101,7 +7223,7 @@ function Library:CreateWindow(WindowInfo)
 
         New("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
-            HorizontalAlignment = Enum.HorizontalAlignment.Right,
+            HorizontalAlignment = Enum.HorizontalAlignment.Left,
             VerticalAlignment = Enum.VerticalAlignment.Center,
             Padding = UDim.new(0, 8),
             Parent = RightWrapper,
@@ -8304,7 +8426,7 @@ function Library:CreateWindow(WindowInfo)
         --// Tab Table \\--
         local Tab = {
             Sections = {},
-            SectionOrder = {},
+            SectionCount = 0,
             SectionGroups = {},
             ConditionalSections = {},
             Description = Description,
@@ -8561,6 +8683,8 @@ function Library:CreateWindow(WindowInfo)
                 })
             end
 
+            Tab.SectionCount += 1
+
             local Section = {
                 BoxHolder = BoxHolder,
                 Holder = SectionHolder,
@@ -8569,6 +8693,9 @@ function Library:CreateWindow(WindowInfo)
                 Tab = Tab,
                 ConditionalGroups = {},
                 Elements = {},
+
+                Side = Info.Side or 1,
+                Order = Tab.SectionCount,
 
                 Folded = not (Info.DefaultOpen ~= false),
             }
@@ -8620,9 +8747,7 @@ function Library:CreateWindow(WindowInfo)
             setmetatable(Section, BaseSection)
 
             Section:Resize()
-            Section.Side = Info.Side
             Tab.Sections[Info.Name] = Section
-            table.insert(Tab.SectionOrder, { Name = Info.Name, Side = Info.Side })
 
             return Section
         end
@@ -9922,29 +10047,158 @@ function Library:CreateWindow(WindowInfo)
         task.spawn(Library.Toggle)
     end
 
-    if Library.IsMobile then
-        local ToggleButton = Library:AddDraggableButton("Toggle", function()
-            Library:Toggle()
-        end, true)
-
-        local LockButton = Library:AddDraggableButton("Lock", function(self)
-            Library.CantDragForced = not Library.CantDragForced
-            self:SetText(Library.CantDragForced and "Unlock" or "Lock")
-        end, true)
-
-        if WindowInfo.MobileButtonsSide == "Right" then
-            ToggleButton.Button.Position = UDim2.new(1, -6, 0, 6)
-            ToggleButton.Button.AnchorPoint = Vector2.new(1, 0)
-
-            LockButton.Button.Position = UDim2.new(1, -6, 0, 46)
-            LockButton.Button.AnchorPoint = Vector2.new(1, 0)
-        else
-            LockButton.Button.Position = UDim2.fromOffset(6, 46)
+    --// Toggle Bubble \\--
+    do
+        local BubbleEnabled = WindowInfo.Bubble
+        if BubbleEnabled == nil then
+            BubbleEnabled = Library.IsMobile
         end
 
-        if WindowInfo.ShowMobileButtons == false then
-            ToggleButton.Button.Visible = false
-            LockButton.Button.Visible = false
+        if BubbleEnabled then
+            local BubbleSizeInfo = WindowInfo.BubbleSize
+            local Width, Height = BubbleSizeInfo.X.Offset, BubbleSizeInfo.Y.Offset
+            local Margin = WindowInfo.BubbleMargin
+            local Padding = WindowInfo.BubblePadding
+            local StartSide = (WindowInfo.BubbleSide == "Left") and "Left" or "Right"
+
+            local Bubble = New("TextButton", {
+                AutoButtonColor = false,
+                BackgroundColor3 = WindowInfo.BubbleColor or "MainColor",
+                BorderSizePixel = 0,
+                Text = "",
+                Size = BubbleSizeInfo,
+                Position = UDim2.new(
+                    StartSide == "Right" and 1 or 0,
+                    StartSide == "Right" and -(Margin + Width) or Margin,
+                    0.5, -Height / 2
+                ),
+                ZIndex = 500,
+                Parent = ScreenGui,
+            })
+            Library:AddToRegistry(Bubble, { BackgroundColor3 = WindowInfo.BubbleColor or "MainColor" })
+
+            table.insert(
+                Library.Corners,
+                New("UICorner", {
+                    CornerRadius = UDim.new(0, WindowInfo.BubbleCornerRadius),
+                    Parent = Bubble,
+                })
+            )
+            table.insert(Library.Scales, New("UIScale", { Parent = Bubble }))
+            Library:AddOutline(Bubble)
+
+            local IconSize = UDim2.fromOffset(
+                math.max(Width - Padding * 2, 4),
+                math.max(Height - Padding * 2, 4)
+            )
+            local CustomIcon = WindowInfo.BubbleIcon and Library:GetCustomIcon(WindowInfo.BubbleIcon)
+
+            if CustomIcon then
+                local BubbleIcon = New("ImageLabel", {
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    BackgroundTransparency = 1,
+                    Image = CustomIcon.Url,
+                    ImageColor3 = WindowInfo.BubbleIconColor or "AccentColor",
+                    ImageRectOffset = CustomIcon.ImageRectOffset,
+                    ImageRectSize = CustomIcon.ImageRectSize,
+                    Position = UDim2.fromScale(0.5, 0.5),
+                    Size = IconSize,
+                    ZIndex = 501,
+                    Parent = Bubble,
+                })
+                Library:AddToRegistry(BubbleIcon, { ImageColor3 = WindowInfo.BubbleIconColor or "AccentColor" })
+            else
+                local BubbleLabel = New("TextLabel", {
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromScale(0.5, 0.5),
+                    Size = IconSize,
+                    Text = WindowInfo.Title:sub(1, 1),
+                    TextColor3 = WindowInfo.BubbleIconColor or "AccentColor",
+                    TextScaled = true,
+                    ZIndex = 501,
+                    Parent = Bubble,
+                })
+                Library:AddToRegistry(BubbleLabel, { TextColor3 = WindowInfo.BubbleIconColor or "AccentColor" })
+            end
+
+            local SnapTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+
+            local function SnapToSide(ToSide: string)
+                local ScreenSize = ScreenGui.AbsoluteSize
+                local ClampedY =
+                    math.clamp(Bubble.AbsolutePosition.Y, Margin, math.max(Margin, ScreenSize.Y - Height - Margin))
+
+                local TargetPos
+                if ToSide == "Right" then
+                    TargetPos = UDim2.new(1, -(Margin + Width), 0, ClampedY)
+                else
+                    TargetPos = UDim2.new(0, Margin, 0, ClampedY)
+                end
+
+                TweenService:Create(Bubble, SnapTweenInfo, { Position = TargetPos }):Play()
+            end
+
+            local StartInputPos, StartPos
+            local Dragging = false
+            local Moved = false
+            local Changed
+
+            Bubble.InputBegan:Connect(function(Input: InputObject)
+                if not IsClickInput(Input) then
+                    return
+                end
+
+                StartInputPos = Input.Position
+                StartPos = Bubble.Position
+                Dragging = true
+                Moved = false
+
+                Changed = Input.Changed:Connect(function()
+                    if Input.UserInputState ~= Enum.UserInputState.End then
+                        return
+                    end
+
+                    Dragging = false
+                    if Changed and Changed.Connected then
+                        Changed:Disconnect()
+                        Changed = nil
+                    end
+
+                    if Moved then
+                        local ScreenSize = ScreenGui.AbsoluteSize
+                        local CenterX = Bubble.AbsolutePosition.X + (Width / 2)
+                        SnapToSide(CenterX < (ScreenSize.X / 2) and "Left" or "Right")
+                    else
+                        Library:Toggle()
+                    end
+                end)
+            end)
+
+            Library:GiveSignal(UserInputService.InputChanged:Connect(function(Input: InputObject)
+                if not (ScreenGui and ScreenGui.Parent) then
+                    Dragging = false
+                    if Changed and Changed.Connected then
+                        Changed:Disconnect()
+                        Changed = nil
+                    end
+
+                    return
+                end
+
+                if Dragging and IsHoverInput(Input) then
+                    local Delta = Input.Position - StartInputPos
+
+                    if not Moved and Delta.Magnitude > 5 then
+                        Moved = true
+                    end
+
+                    Bubble.Position = UDim2.new(
+                        StartPos.X.Scale, StartPos.X.Offset + Delta.X,
+                        StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y
+                    )
+                end
+            end))
         end
     end
 
@@ -10266,54 +10520,21 @@ function Library:CreateWindow(WindowInfo)
                 local Tab        = TabEntry.Tab
                 local TabMatches = {}
 
-                -- Tab.Sections is a hash map (unordered), so iterating it directly
-                -- produces an arbitrary order that doesn't match the actual on-screen
-                -- layout (single-column/full-width sections would randomly end up
-                -- anywhere, often last). Tab.SectionOrder records the order sections
-                -- were actually created in, along with their Side (1 = left column,
-                -- 2 = right column, nil = full-width/one-column). Mirror the real
-                -- layout: full-width sections keep their creation order, and the
-                -- first time a left/right section appears we splice in the *entire*
-                -- two-column block (every left section top-to-bottom, then every
-                -- right section top-to-bottom) at that point, exactly matching
-                -- GetSectionParent's behaviour when the columns row is built.
-                local OrderedSections = {}
-                if Tab.SectionOrder then
-                    local LeftSections, RightSections = {}, {}
-                    local ColumnsSpliced = false
-
-                    for _, Entry in Tab.SectionOrder do
-                        if Entry.Side == 1 then
-                            table.insert(LeftSections, Entry.Name)
-                        elseif Entry.Side == 2 then
-                            table.insert(RightSections, Entry.Name)
-                        end
-                    end
-
-                    for _, Entry in Tab.SectionOrder do
-                        if Entry.Side == 1 or Entry.Side == 2 then
-                            if not ColumnsSpliced then
-                                ColumnsSpliced = true
-                                for _, N in LeftSections do
-                                    table.insert(OrderedSections, N)
-                                end
-                                for _, N in RightSections do
-                                    table.insert(OrderedSections, N)
-                                end
-                            end
-                        else
-                            table.insert(OrderedSections, Entry.Name)
-                        end
-                    end
-                else
-                    for SectionName in Tab.Sections do
-                        table.insert(OrderedSections, SectionName)
-                    end
+                local SortedSections = {}
+                for SectionName, Section in Tab.Sections do
+                    table.insert(SortedSections, { Name = SectionName, Section = Section })
                 end
+                table.sort(SortedSections, function(A, B)
+                    local SideA, SideB = A.Section.Side or 1, B.Section.Side or 1
+                    if SideA ~= SideB then
+                        return SideA < SideB
+                    end
+                    return (A.Section.Order or 0) < (B.Section.Order or 0)
+                end)
 
-                for _, SectionName in OrderedSections do
-                    local Section = Tab.Sections[SectionName]
-                    if not Section then continue end
+                for _, SectionEntry in SortedSections do
+                    local SectionName = SectionEntry.Name
+                    local Section     = SectionEntry.Section
                     local SectionMatches = not Filtering or SectionName:lower():match(Search)
                     local ElMatches = {}
                     for _, Info in Section.Elements do
@@ -11201,8 +11422,11 @@ local Window = Library:CreateWindow({
     EnableSidebarResize = true,
     SidebarCompacted = false,
     SingleInstance = true,
-    DiscordLink = "https://discord.gg/yourinvite",
+    DiscordLink = "https://discord.gg/",
     DiscordAction = "open",
+    Bubble = true, -- force it on for this demo, even off mobile
+    BubbleSide = "Right",
+    BubbleIcon = Library.ImageManager.GetAsset("AstralIcon"),
 })
 
 -- ================================================================

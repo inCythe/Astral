@@ -280,8 +280,8 @@ do
             LibraryScheme["Font"] = Font.fromEnum(Enum.Font[theme["FontFace"]])
 
         else
-            FinalTheme["FontFace"] = "Code"
-            LibraryScheme["Font"] = Font.fromEnum(Enum.Font.Code)
+            FinalTheme["FontFace"] = "GothamMedium"
+            LibraryScheme["Font"] = Font.fromEnum(Enum.Font.GothamMedium)
         end
 
         for _, field in { "RedColor", "DarkColor", "WhiteColor" } do
@@ -367,8 +367,8 @@ do
         groupbox:AddLabel("Font color"):AddColorPicker("FontColor", { Default = self.Library.Scheme.FontColor })
         groupbox:AddDropdown("FontFace", {
             Text = "Font Face",
-            Default = "Code",
-            Values = { "BuilderSans", "Code", "Fantasy", "Gotham", "Jura", "Roboto", "RobotoMono", "SourceSans" },
+            Default = "GothamMedium",
+            Values = { "BuilderSans", "Code", "Fantasy", "Gotham", "GothamMedium", "Jura", "Roboto", "RobotoMono", "SourceSans" },
         })
 
         local ThemesArray = {}
