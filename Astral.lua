@@ -7223,7 +7223,7 @@ function Library:CreateWindow(WindowInfo)
 
         New("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
-            HorizontalAlignment = Enum.HorizontalAlignment.Left,
+            HorizontalAlignment = Enum.HorizontalAlignment.Right,
             VerticalAlignment = Enum.VerticalAlignment.Center,
             Padding = UDim.new(0, 8),
             Parent = RightWrapper,
@@ -10609,6 +10609,20 @@ function Library:CreateWindow(WindowInfo)
 
         SearchBox.Focused:Connect(OpenOverlay)
 
+        -- The search box can move (e.g. tab info showing/hiding re-flows the
+        -- top bar, or the window gets resized) while the overlay is open.
+        -- Keep it glued to the bottom of the search box whenever that happens.
+        Library:GiveSignal(SearchBox:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+            if SearchOverlay.Visible then
+                RepositionOverlay()
+            end
+        end))
+        Library:GiveSignal(SearchBox:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+            if SearchOverlay.Visible then
+                RepositionOverlay()
+            end
+        end))
+
         SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
             if SearchOverlay.Visible then
                 task.spawn(RebuildOverlay, SearchBox.Text)
@@ -11422,11 +11436,11 @@ local Window = Library:CreateWindow({
     EnableSidebarResize = true,
     SidebarCompacted = false,
     SingleInstance = true,
-    DiscordLink = "https://discord.gg/",
+    DiscordLink = "https://discord.gg/yourinvite",
     DiscordAction = "open",
     Bubble = true, -- force it on for this demo, even off mobile
-    BubbleSide = "Right",
-    BubbleIcon = Library.ImageManager.GetAsset("AstralIcon"),
+    BubbleSide = "Left",
+    BubbleIcon = "menu",
 })
 
 -- ================================================================
