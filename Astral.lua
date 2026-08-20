@@ -1077,31 +1077,68 @@ function Library:UpdateColorsUsingRegistry()
     end
 end
 
-function Library:CalculateAutoDPIScale(Rounding: number?): number
+function Library:CalculateAutoDPIScale(Rounding: number?, BaseSize: Vector2?): number
     local Camera = workspace.CurrentCamera
-    local ViewportSize: Vector2 = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
 
-    local DPIValue
-
-    if RunService:IsStudio() and ViewportSize.X <= 5 and ViewportSize.Y <= 5 then
-        DPIValue = 5
-    else
-        local ShortSide = math.min(ViewportSize.X, ViewportSize.Y)
-        local LongSide = math.max(ViewportSize.X, ViewportSize.Y)
-
-        local MinShortSide, MinDPI = 360, 2.2
-        local MaxShortSide, MaxDPI = 1080, 5
-
-        local Alpha = math.clamp((ShortSide - MinShortSide) / (MaxShortSide - MinShortSide), 0, 1)
-        DPIValue = MinDPI + (MaxDPI - MinDPI) * Alpha
-
-        if LongSide > 0 then
-            local AspectBonus = math.clamp((LongSide / ShortSide - 1.6) * 0.4, 0, 0.6)
-            DPIValue = math.min(DPIValue + AspectBonus, MaxDPI)
-        end
-
-        DPIValue = math.clamp(DPIValue, 1, 10)
+    if not Camera then
+        return 5
     end
+
+    local ViewportSize = Camera.ViewportSize
+
+    if ViewportSize.X <= 5 or ViewportSize.Y <= 5 then
+        return 5
+    end
+
+    -- =========================================================
+    -- DPI MODEL
+    --
+    -- DPI 5 = 1.0x = BASE UI SIZE
+    --
+    -- 1  = 0.6x
+    -- 2  = 0.7x
+    -- 3  = 0.8x
+    -- 4  = 0.9x
+    -- 5  = 1.0x
+    -- 6  = 1.1x
+    -- 7  = 1.2x
+    -- 8  = 1.3x
+    -- 9  = 1.4x
+    -- 10 = 1.5x
+    -- =========================================================
+
+    local BaseDPI = 5
+
+    -- Keep some room around the UI so it doesn't touch the screen edges.
+    local ScreenPadding = 32
+
+    local AvailableWidth = math.max(ViewportSize.X - ScreenPadding * 2, 1)
+    local AvailableHeight = math.max(ViewportSize.Y - ScreenPadding * 2, 1)
+
+    -- BaseSize must be the BASE / logical window size (WindowInfo.Size).
+    -- We never modify that size directly -- we only determine what
+    -- UIScale is required to make it fit the viewport.
+    BaseSize = BaseSize or Library.OriginalMinSize
+
+    local BaseWidth = BaseSize.X
+    local BaseHeight = BaseSize.Y
+
+    if BaseWidth <= 0 or BaseHeight <= 0 then
+        return BaseDPI
+    end
+
+    -- Find the largest scale that fits the viewport.
+    local WidthScale = AvailableWidth / BaseWidth
+    local HeightScale = AvailableHeight / BaseHeight
+
+    local FitScale = math.min(WidthScale, HeightScale)
+
+    -- Convert UIScale back into the DPI system.
+    -- Scale = 0.5 + DPI * 0.1  =>  DPI = (Scale - 0.5) / 0.1
+    local DPIValue = (FitScale - 0.5) / 0.1
+
+    -- Never allow the automatic system to go outside 1-10.
+    DPIValue = math.clamp(DPIValue, 1, 10)
 
     if Rounding ~= nil then
         local Multiplier = 10 ^ math.max(math.floor(Rounding), 0)
@@ -1116,8 +1153,14 @@ function Library:SetDPIScale(DPIScale: number)
     DPIScale = math.clamp(tonumber(DPIScale) or 5, 1, 10)
     local ScaleFactor = 0.5 + (DPIScale * 0.1)
 
+    -- Store both the actual DPI and the resulting UIScale.
+    Library.DPIValue = DPIScale
     Library.DPIScale = ScaleFactor
-    Library.MinSize = Library.OriginalMinSize * ScaleFactor
+
+    -- IMPORTANT:
+    -- MinSize NEVER changes with DPI. The logical UI dimensions remain
+    -- constant; only UIScale changes to make them fit the viewport.
+    Library.MinSize = Library.OriginalMinSize
 
 	for _, UIScale in Library.Scales do
         UIScale.Scale = ScaleFactor - (tonumber(Library.ScalesOffset[UIScale]) or 0)
@@ -8349,17 +8392,17 @@ function Library:CreateWindow(WindowInfo)
         until ViewportSize.X > 5 and ViewportSize.Y > 5
     end
 
-    local MaxX = ViewportSize.X - 64
-    local MaxY = ViewportSize.Y - 64
-
-    Library.OriginalMinSize =
-        Vector2.new(math.min(Library.OriginalMinSize.X, MaxX), math.min(Library.OriginalMinSize.Y, MaxY))
+    -- =========================================================
+    -- BASE UI SIZE
+    --
+    -- WindowInfo.Size is NEVER modified here. The UI is always
+    -- created using its original logical dimensions -- DPI/UIScale
+    -- is what makes that UI fit the current viewport.
+    -- =========================================================
     Library.MinSize = Library.OriginalMinSize
 
-    WindowInfo.Size = UDim2.fromOffset(
-        math.clamp(WindowInfo.Size.X.Offset, Library.MinSize.X, MaxX),
-        math.clamp(WindowInfo.Size.Y.Offset, Library.MinSize.Y, MaxY)
-    )
+    local BaseWindowSize = Vector2.new(WindowInfo.Size.X.Offset, WindowInfo.Size.Y.Offset)
+
     if typeof(WindowInfo.Font) == "EnumItem" then
         WindowInfo.Font = Font.fromEnum(WindowInfo.Font)
     end
@@ -8447,7 +8490,7 @@ function Library:CreateWindow(WindowInfo)
                 DPIValue = tonumber(ExplicitDPIScale) or 5
                 Library.AutoDPIScale = false
             else
-                DPIValue = Library:CalculateAutoDPIScale()
+                DPIValue = Library:CalculateAutoDPIScale(2, BaseWindowSize)
                 Library.AutoDPIScale = true
             end
             Library:SetDPIScale(DPIValue)
@@ -8459,7 +8502,14 @@ function Library:CreateWindow(WindowInfo)
                 if not Library.AutoDPIScale then
                     return
                 end
-                Library:SetDPIScale(Library:CalculateAutoDPIScale())
+
+                local NewDPI = Library:CalculateAutoDPIScale(2, BaseWindowSize)
+
+                if math.abs((Library.DPIValue or 5) - NewDPI) < 0.01 then
+                    return
+                end
+
+                Library:SetDPIScale(NewDPI)
             end
 
             local function BindCamera(Cam: Camera?)
