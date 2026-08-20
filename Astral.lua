@@ -12012,20 +12012,33 @@ function Library:CreateWindow(WindowInfo)
         end
 
         if BubbleEnabled then
-            -- MakeWindow's initial DPI setup above applies a rough first-pass
-            -- scale immediately, then defers a more accurate recalculation to
-            -- a later frame (task.defer, once Roblox has actually laid out
-            -- the frame). If the bubble is created before that recalculation
-            -- lands, its initial Position gets baked from the rough scale
-            -- and visibly pops/jumps once the real scale applies. Re-settle
-            -- DPI scale synchronously right here, immediately before
-            -- creating the bubble, so it always reads the final value.
-            if Library.AutoDPIScale then
-                Library.BaseScale = Library:CalculateAutoBaseScale()
-            end
-            Library:SetDPIScale(Library.UIScaleValue or 5)
+            -- Don't create the bubble synchronously here. Config restoration
+            -- (a saved UI-scale slider value, etc.) normally runs in the
+            -- consumer's own script immediately after MakeWindow(...)
+            -- returns -- i.e. AFTER this point in the call stack, not before.
+            -- Creating the bubble right now would bake its position from
+            -- whatever DPI scale happens to be active yet (the rough
+            -- first-pass default), and it would visibly pop/jump once config
+            -- applies the real saved scale a moment later.
+            --
+            -- task.defer waits until the current synchronous call stack
+            -- finishes -- which includes MakeWindow returning and any
+            -- config-restore code the consumer runs directly after it -- so
+            -- the bubble is created reading whatever DPI scale is actually
+            -- active by then, instead of a stale default.
+            task.defer(function()
+                if Library.Bubble then
+                    -- Something (e.g. ToggleBubble) already created it.
+                    return
+                end
 
-            CreateBubble()
+                if Library.AutoDPIScale then
+                    Library.BaseScale = Library:CalculateAutoBaseScale()
+                end
+                Library:SetDPIScale(Library.UIScaleValue or 5)
+
+                CreateBubble()
+            end)
         end
     end
 
