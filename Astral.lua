@@ -2360,6 +2360,8 @@ function Library:AddDraggableMenu(Name: string)
     local TitleTextWidth = select(1, Library:GetTextBounds(Name, Library.Scheme.Font, 15))
     local ResolvedWidth = math.max(MenuWidth, math.ceil(TitleTextWidth) + 12 + ControlsWidth)
 
+    local MaxWidth = 480
+
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = "BackgroundColor",
@@ -2368,9 +2370,10 @@ function Library:AddDraggableMenu(Name: string)
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
-    New("UISizeConstraint", {
+    local SizeConstraint = New("UISizeConstraint", {
 
-        MaxSize = Vector2.new(ResolvedWidth, 800),
+        MaxSize = Vector2.new(MaxWidth, 800),
+        MinSize = Vector2.new(ResolvedWidth, 0),
         Parent = Holder,
     })
     table.insert(
@@ -2488,13 +2491,56 @@ function Library:AddDraggableMenu(Name: string)
         SortOrder = Enum.SortOrder.LayoutOrder,
         Parent = Container,
     })
-    New("UIPadding", {
+    local ContainerPadding = New("UIPadding", {
         PaddingBottom = UDim.new(0, 8),
         PaddingLeft = UDim.new(0, 8),
         PaddingRight = UDim.new(0, 8),
         PaddingTop = UDim.new(0, 8),
         Parent = Container,
     })
+
+    -- Measures the widest direct child of Container (each child is expected
+    -- to be AutomaticSize.X, so AbsoluteSize.X reflects its natural width)
+    -- and grows/shrinks Holder to fit it, clamped between the title-derived
+    -- ResolvedWidth and MaxWidth.
+    local ResizeQueued = false
+    local function RecalculateWidth()
+        local WidestChildWidth = 0
+        for _, Child in ipairs(Container:GetChildren()) do
+            if Child:IsA("GuiObject") and Child.Visible then
+                WidestChildWidth = math.max(WidestChildWidth, Child.AbsoluteSize.X)
+            end
+        end
+
+        local ContentWidth = WidestChildWidth
+            + ContainerPadding.PaddingLeft.Offset
+            + ContainerPadding.PaddingRight.Offset
+
+        local TargetWidth = math.clamp(math.max(ResolvedWidth, ContentWidth), ResolvedWidth, MaxWidth)
+
+        SizeConstraint.MinSize = Vector2.new(TargetWidth, 0)
+        Holder.Size = UDim2.fromOffset(TargetWidth, 0)
+    end
+
+    local function QueueResize()
+        if ResizeQueued then
+            return
+        end
+        ResizeQueued = true
+        task.defer(function()
+            ResizeQueued = false
+            RecalculateWidth()
+        end)
+    end
+
+    Container.ChildAdded:Connect(function(Child)
+        QueueResize()
+        if Child:IsA("GuiObject") then
+            Child:GetPropertyChangedSignal("AbsoluteSize"):Connect(QueueResize)
+            Child:GetPropertyChangedSignal("Visible"):Connect(QueueResize)
+        end
+    end)
+    Container.ChildRemoved:Connect(QueueResize)
 
     Container.ZIndex = BaseZIndex + 100
 
@@ -2521,7 +2567,7 @@ function Library:AddDraggableMenu(Name: string)
         ConditionalGroups = {},
     }
     function ContainerObj:Resize()
-
+        RecalculateWidth()
     end
 
     function ContainerObj:SetCollapsed(Collapsed: boolean)
