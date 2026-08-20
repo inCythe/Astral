@@ -1150,33 +1150,23 @@ function Library:SetDPIScale(DPIScale: number)
         Library:SafeCallback(Callback, ScaleFactor)
     end
 
-    -- Keep the bubble's on-screen position valid after a scale change.
-    -- UIScale only multiplies AbsoluteSize; it never touches Position, so
-    -- Bubble.Position's offset is real screen pixels. IMPORTANT: we can't
-    -- read Bubble.AbsoluteSize here -- the UIScale.Scale write above hasn't
-    -- propagated through Roblox's UI layout engine yet this frame, so
-    -- AbsoluteSize would still report the OLD size (this is why the bubble
-    -- looked "stuck" at its old scaled position until something else, like a
-    -- drag, forced a fresh read). Compute the rendered size directly from
-    -- ScaleFactor instead, the same way MainFrame's re-centering above does.
-    if Library.Bubble and Library.Bubble.Parent and ScreenGui then
-        local Bubble = Library.Bubble
-        local BubbleScaleFactor = (Library.BubbleScale and Library.BubbleScale.Scale) or ScaleFactor
-        local RenderedWidth = Bubble.Size.X.Offset * BubbleScaleFactor
-        local RenderedHeight = Bubble.Size.Y.Offset * BubbleScaleFactor
-
-        local ScreenSize = ScreenGui.AbsoluteSize
-        local Y = Bubble.AbsolutePosition.Y
-
-        local ClampedY =
-            math.clamp(Y, 0, math.max(0, ScreenSize.Y - RenderedHeight))
-
-        local IsRight = Bubble.Position.X.Scale > 0.5
-        if IsRight then
-            Bubble.Position = UDim2.new(1, -RenderedWidth, 0, ClampedY)
-        else
-            Bubble.Position = UDim2.new(0, 0, 0, ClampedY)
-        end
+    -- Keep the bubble snapped to its side after a scale change. Reuses the
+    -- SAME SnapToSide the drag-release magnet uses (confirmed working)
+    -- instead of a separate hand-rolled reimplementation. Deferred to next
+    -- frame because AbsoluteSize/AbsolutePosition (which SnapToSide reads)
+    -- haven't propagated through Roblox's UI layout engine yet this frame --
+    -- reading them synchronously right after the UIScale.Scale write above
+    -- would still report the OLD pre-scale-change size, which is why the
+    -- bubble looked "stuck" until something else (like a drag) forced a
+    -- later, fresh read.
+    if Library.Bubble and Library.Bubble.Parent and Library.SnapBubbleToSide then
+        local BubbleToSnap = Library.Bubble
+        local SideToSnap = Library.BubbleSide or "Right"
+        task.defer(function()
+            if Library.Bubble == BubbleToSnap and BubbleToSnap.Parent then
+                Library.SnapBubbleToSide(SideToSnap)
+            end
+        end)
     end
 end
 
@@ -11907,8 +11897,16 @@ function Library:CreateWindow(WindowInfo)
                     TargetPos = UDim2.new(0, 0, 0, ClampedY)
                 end
 
+                Library.BubbleSide = ToSide
                 TweenService:Create(Bubble, SnapTweenInfo, { Position = TargetPos }):Play()
             end
+
+            -- Exposed so SetDPIScale (defined far above CreateBubble, and
+            -- unable to see this local) can reuse the SAME magnet logic that
+            -- already works correctly for drag-release, instead of a second
+            -- hand-rolled reimplementation that reads stale AbsoluteSize.
+            Library.SnapBubbleToSide = SnapToSide
+            Library.BubbleSide = StartSide
 
             local StartInputPos, StartPos
             local Dragging = false
