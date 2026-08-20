@@ -12156,10 +12156,18 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(0, 300, 0, 400),
             Visible = false,
             ZIndex = 12000,
-            Parent = ScreenGui,
+            -- Parented to MainFrame (not ScreenGui) so it shares MainFrame's
+            -- single UIScale instead of getting its own independent one via
+            -- NewTrackedScale. Previously SearchOverlay and SearchBox lived
+            -- under two DIFFERENT UIScale nodes that were kept in sync by
+            -- hand, which is exactly the kind of setup that drifts whenever
+            -- anything about the scale timing is even slightly off. With one
+            -- shared UIScale, RepositionOverlay below only needs relative,
+            -- same-space math -- no more manually multiplying/dividing by
+            -- ScaleFactor to convert between two independently-scaled trees.
+            Parent = MainFrame,
         })
         Library:AddToRegistry(SearchOverlay, { BackgroundColor3 = "MainColor" })
-        Library:NewTrackedScale(SearchOverlay)
 
         New("UICorner", {
             CornerRadius = UDim.new(0, WindowInfo.CornerRadius),
@@ -12541,31 +12549,47 @@ function Library:CreateWindow(WindowInfo)
         CloseOverlay = CloseOverlayImpl
 
         local function RepositionOverlay()
-
             local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
 
-            local AbsPos  = SearchBox.AbsolutePosition
-            local AbsSize = SearchBox.AbsoluteSize
+            -- SearchOverlay and SearchBox now share the SAME UIScale (the one
+            -- on MainFrame, since SearchOverlay is parented under MainFrame).
+            -- That means there is only ONE scale factor in play here, not two
+            -- independently-scaled trees to reconcile. Converting both
+            -- AbsolutePosition readings into MainFrame's logical/pre-scale
+            -- space and subtracting gives the correct relative offset
+            -- directly -- no compounding, no guessing which side needs to be
+            -- multiplied vs divided.
+            local SearchAbsPos  = SearchBox.AbsolutePosition
+            local SearchAbsSize = SearchBox.AbsoluteSize
+            local MainAbsPos    = MainFrame.AbsolutePosition
+
+            local RelativeX = (SearchAbsPos.X - MainAbsPos.X) / ScaleFactor
+            local RelativeY = (SearchAbsPos.Y - MainAbsPos.Y) / ScaleFactor
+            local BoxWidth  = SearchAbsSize.X / ScaleFactor
+            local BoxHeight = SearchAbsSize.Y / ScaleFactor
 
             local Viewport   = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-            local MaxHeight  = math.max(Viewport.Y - (AbsPos.Y + AbsSize.Y + 4) - 12, 80)
+            local MaxHeight  = math.max((Viewport.Y / ScaleFactor) - (RelativeY + BoxHeight + 4) - (12 / ScaleFactor), 80)
             local WantHeight = math.min(400, MaxHeight)
 
-            -- SearchOverlay has a UIScale on it (see NewTrackedScale above),
-            -- so its Position.Offset is interpreted in LOGICAL/pre-scale
-            -- space and gets multiplied by ScaleFactor at render time — same
-            -- as Size just above. AbsPos/AbsSize here are already in SCREEN
-            -- space (post-scale), so we must divide by ScaleFactor before
-            -- writing them into Position, or the UIScale applies a second
-            -- time and the overlay renders offset from the search box,
-            -- worse the further ScaleFactor is from 1.
-            SearchOverlay.Size     = UDim2.fromOffset((AbsSize.X + 3) / ScaleFactor, WantHeight / ScaleFactor)
-            SearchOverlay.Position = UDim2.fromOffset(AbsPos.X / ScaleFactor, (AbsPos.Y + AbsSize.Y + 4) / ScaleFactor)
+            SearchOverlay.Size     = UDim2.fromOffset(BoxWidth + 3, WantHeight)
+            SearchOverlay.Position = UDim2.fromOffset(RelativeX, RelativeY + BoxHeight + 4)
         end
 
         Library:GiveDPIScaleCallback(function()
             if SearchOverlay.Visible then
-                task.defer(RepositionOverlay)
+                -- Kept as a defensive re-run after a real rendered frame:
+                -- AbsolutePosition/AbsoluteSize don't repropagate the instant
+                -- UIScale.Scale changes, only after the next layout pass.
+                -- With a single shared UIScale this matters far less than
+                -- before (both sides settle together), but waiting for
+                -- RenderStepped still guarantees the read is post-layout.
+                task.spawn(function()
+                    RunService.RenderStepped:Wait()
+                    if SearchOverlay.Visible then
+                        RepositionOverlay()
+                    end
+                end)
             end
         end)
 
