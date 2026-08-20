@@ -1541,6 +1541,27 @@ function Library:NewTrackedScale(Parent: Instance, Offset: number?)
     return Scale
 end
 
+function Library:FindScaledContainer(UI: Instance): GuiObject?
+    -- Walks up UI's ancestor chain and returns the nearest ancestor that
+    -- already has its own UIScale child (e.g. MainFrame, or a Loading
+    -- screen's own frame). Used so a new overlay/menu can be parented
+    -- UNDER that same container and inherit its UIScale directly, instead
+    -- of getting an independent UIScale of its own at the ScreenGui root.
+    -- Two independently-scaled trees trying to stay visually aligned via
+    -- hand-written AbsolutePosition math is exactly what caused the search
+    -- overlay (and now these overlays) to drift at non-default UI scale --
+    -- sharing one UIScale node removes the problem structurally instead of
+    -- patching the math.
+    local Current = UI and UI.Parent
+    while Current and Current ~= game do
+        if Current:IsA("GuiObject") and Current:FindFirstChildOfClass("UIScale") then
+            return Current
+        end
+        Current = Current.Parent
+    end
+    return nil
+end
+
 local function SafeParentUI(UI: Instance, Parent: Instance | () -> Instance)
     local success, _error = pcall(function()
         if not Parent then
@@ -2700,9 +2721,19 @@ function Library:AddContextMenu(
 )
     local Menu
 
-    local ParentGui = Holder:FindFirstAncestorOfClass("ScreenGui")
-    if not ParentGui or (ParentGui ~= ScreenGui and not (Library.ActiveLoading and ParentGui == Library.ActiveLoading.ScreenGui)) then
-        ParentGui = (Library.ActiveLoading and Library.ActiveLoading.ScreenGui) or ScreenGui
+    -- Parent the menu under the SAME scaled container Holder lives in
+    -- (normally MainFrame, or the Loading screen's frame) rather than at
+    -- the ScreenGui root with its own separate UIScale. This mirrors the
+    -- fix applied to the search overlay: one shared UIScale means Open()
+    -- below can use plain relative math instead of independently
+    -- reconciling two scale factors.
+    local ScaledContainer = Library:FindScaledContainer(Holder)
+    local ParentGui = ScaledContainer
+    if not ParentGui then
+        ParentGui = Holder:FindFirstAncestorOfClass("ScreenGui")
+        if not ParentGui or (ParentGui ~= ScreenGui and not (Library.ActiveLoading and ParentGui == Library.ActiveLoading.ScreenGui)) then
+            ParentGui = (Library.ActiveLoading and Library.ActiveLoading.ScreenGui) or ScreenGui
+        end
     end
 
     if List then
@@ -2729,7 +2760,13 @@ function Library:AddContextMenu(
             Parent = ParentGui,
         })
     end
-    Library:NewTrackedScale(Menu)
+    -- Only give Menu its own independent UIScale if it did NOT land inside
+    -- a container that already has one -- otherwise this would recreate the
+    -- exact two-scale-node problem we just avoided by parenting it there.
+    local MenuIsInScaledContainer = ScaledContainer ~= nil
+    if not MenuIsInScaledContainer then
+        Library:NewTrackedScale(Menu)
+    end
 
     New("UIStroke", {
         Color = "OutlineColor",
@@ -2764,6 +2801,34 @@ function Library:AddContextMenu(
         })
     end
 
+    local function ComputeMenuPosition(): UDim2
+        local RawOffset = typeof(Offset) == "function" and Offset() or Offset
+
+        if not MenuIsInScaledContainer then
+            -- Fallback path: Menu has its own independent UIScale (only
+            -- happens if Holder wasn't found inside any scaled container).
+            -- Keep the original raw-absolute behavior here.
+            return UDim2.fromOffset(
+                math.floor(Holder.AbsolutePosition.X + RawOffset[1]),
+                math.floor(Holder.AbsolutePosition.Y + RawOffset[2])
+            )
+        end
+
+        -- Menu shares Holder's UIScale (both live under ScaledContainer), so
+        -- convert Holder's screen-space AbsolutePosition into that
+        -- container's logical/pre-scale space before writing it into
+        -- Menu.Position -- same approach used for the search overlay.
+        local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
+        local ContainerAbsPos = ScaledContainer.AbsolutePosition
+        local RelativeX = (Holder.AbsolutePosition.X - ContainerAbsPos.X) / ScaleFactor
+        local RelativeY = (Holder.AbsolutePosition.Y - ContainerAbsPos.Y) / ScaleFactor
+
+        return UDim2.fromOffset(
+            math.floor(RelativeX + RawOffset[1]),
+            math.floor(RelativeY + RawOffset[2])
+        )
+    end
+
     function Table:Open()
         if Removed then
             -- Menu instance is destroyed; silently refuse instead of
@@ -2780,17 +2845,7 @@ function Library:AddContextMenu(
         CurrentMenu = Table
         Table.Active = true
 
-        if typeof(Offset) == "function" then
-            Menu.Position = UDim2.fromOffset(
-                math.floor(Holder.AbsolutePosition.X + Offset()[1]),
-                math.floor(Holder.AbsolutePosition.Y + Offset()[2])
-            )
-        else
-            Menu.Position = UDim2.fromOffset(
-                math.floor(Holder.AbsolutePosition.X + Offset[1]),
-                math.floor(Holder.AbsolutePosition.Y + Offset[2])
-            )
-        end
+        Menu.Position = ComputeMenuPosition()
         Menu.Size = typeof(Table.Size) == "function" and Table.Size() or Table.Size
         if typeof(ActiveCallback) == "function" then
             Library:SafeCallback(ActiveCallback, true)
@@ -2806,17 +2861,7 @@ function Library:AddContextMenu(
         end
 
         Table.Signal = Holder:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
-            if typeof(Offset) == "function" then
-                Menu.Position = UDim2.fromOffset(
-                    math.floor(Holder.AbsolutePosition.X + Offset()[1]),
-                    math.floor(Holder.AbsolutePosition.Y + Offset()[2])
-                )
-            else
-                Menu.Position = UDim2.fromOffset(
-                    math.floor(Holder.AbsolutePosition.X + Offset[1]),
-                    math.floor(Holder.AbsolutePosition.Y + Offset[2])
-                )
-            end
+            Menu.Position = ComputeMenuPosition()
         end)
     end
 
