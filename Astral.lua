@@ -3226,11 +3226,16 @@ do
         local ParentObj = self
         local ToggleLabel = ParentObj.TextLabel
 
+        -- Keep the script-declared defaults as the authoritative initial value.
+        -- Do not alias DefaultModifiers: callers may reuse/mutate their table.
+        local DeclaredDefaultKey = Info.Default or "None"
+        local DeclaredDefaultModifiers = table.clone(Info.DefaultModifiers or {})
+
         local KeyPicker = {
             Text = Info.Text,
-            Value = Info.Default,
-            Modifiers = Info.DefaultModifiers,
-            DisplayValue = Info.Default,
+            Value = DeclaredDefaultKey,
+            Modifiers = DeclaredDefaultModifiers,
+            DisplayValue = DeclaredDefaultKey,
 
             Blacklisted = Info.Blacklisted,
             BlacklistedModifiers = Info.BlacklistedModifiers,
@@ -3731,9 +3736,9 @@ do
         -- initial raw fields above. SaveManager may subsequently replace it
         -- with a saved value, which is the intended persistence behavior.
         KeyPicker:SetValue({
-            Key = Info.Default,
+            Key = DeclaredDefaultKey,
             Mode = Info.Mode,
-            Modifiers = Info.DefaultModifiers,
+            Modifiers = DeclaredDefaultModifiers,
         })
 
         function KeyPicker:SetText(Text)
@@ -3948,8 +3953,8 @@ do
             table.insert(ParentObj.Addons, KeyPicker)
         end
 
-        KeyPicker.Default = KeyPicker.Value
-        KeyPicker.DefaultModifiers = table.clone(KeyPicker.Modifiers or {})
+        KeyPicker.Default = DeclaredDefaultKey
+        KeyPicker.DefaultModifiers = table.clone(DeclaredDefaultModifiers)
 
         Options[Idx] = KeyPicker
 

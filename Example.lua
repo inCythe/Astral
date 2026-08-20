@@ -20,7 +20,7 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/inCyt
 local Window = Library:CreateWindow({
     Title            = "Astral UI — Reference",
     Icon             = "AstralIcon",
-    Footer           = "Quick Reference v2.0",
+    Footer           = "Quick Reference v2.1 — KeyPicker Defaults Fixed",
     Size             = UDim2.fromOffset(940, 620),
     Center           = true,
     Resizable        = true,
@@ -843,6 +843,16 @@ DisabledDemo = ButtonSection:AddButton({
 -- Methods: SetValue({Key,Mode,Modifiers}), GetState, SetText, OnChanged, OnClick
 local KeySection = ActionsTab:AddRightSection("Key Picker — every mode")
 
+-- Script-declared KeyPicker defaults. These are intentionally kept in one
+-- place so the example and the library's fresh-config behavior stay in sync.
+-- Deleting the config must recreate these values instead of falling back to
+-- "None". Saved config values still override them when a config exists.
+local ExampleKeyDefaults = {
+    BoundToggleKey = { Key = "F1", Mode = "Toggle", Modifiers = {} },
+    HoldToggleKey = { Key = "MB2", Mode = "Hold", Modifiers = {} },
+    PressKey = { Key = "F3", Mode = "Press", Modifiers = { "LCtrl", "LShift" } },
+}
+
 local BoundToggle = KeySection:AddToggle("BoundToggle", {
     Text = "Keybound Toggle",
     Default = false,
@@ -852,8 +862,9 @@ local BoundToggle = KeySection:AddToggle("BoundToggle", {
 -- Callback but never calls Toggle:SetValue() under the hood.
 local BoundKey = BoundToggle:AddKeyPicker("BoundToggleKey", {
     Text = "Toggle Keybind",
-    Default = "F1",
-    Mode = "Toggle",
+    Default = ExampleKeyDefaults.BoundToggleKey.Key,
+    DefaultModifiers = ExampleKeyDefaults.BoundToggleKey.Modifiers,
+    Mode = ExampleKeyDefaults.BoundToggleKey.Mode,
     Modes = { "Toggle", "Hold", "Always" },
     SyncToggleState = true,
 })
@@ -868,8 +879,9 @@ local HoldToggle = KeySection:AddToggle("HoldToggle", {
 })
 local HoldKey = HoldToggle:AddKeyPicker("HoldToggleKey", {
     Text = "Hold Keybind",
-    Default = "MB2",
-    Mode = "Hold",
+    Default = ExampleKeyDefaults.HoldToggleKey.Key,
+    DefaultModifiers = ExampleKeyDefaults.HoldToggleKey.Modifiers,
+    Mode = ExampleKeyDefaults.HoldToggleKey.Mode,
     SyncToggleState = true,
 })
 HoldKey:OnChanged(function(KeyCode, Modifiers)
@@ -881,9 +893,9 @@ end)
 local PressLabel = KeySection:AddLabel("Modifier Combo (Ctrl+Shift, Press mode)")
 PressLabel:AddKeyPicker("PressKey", {
     Text = "Ctrl+Shift Combo",
-    Default = "F3",
-    DefaultModifiers = { "LCtrl", "LShift" },
-    Mode = "Press",
+    Default = ExampleKeyDefaults.PressKey.Key,
+    DefaultModifiers = ExampleKeyDefaults.PressKey.Modifiers,
+    Mode = ExampleKeyDefaults.PressKey.Mode,
     Callback = function(State)
         print("[Callback] PressKey fired, state:", State)
     end,
