@@ -11684,6 +11684,17 @@ function Library:CreateWindow(WindowInfo)
     end
 
     function Library:Toggle(Value: boolean?)
+        -- Piggyback the bubble's first-time creation on the window's own
+        -- reveal call. With AutoShow = false (SaveManager in play), THIS is
+        -- the call that fires once config has actually finished loading and
+        -- DPIScale is settled to its final saved value -- same moment the
+        -- window itself is considered safe to show. Only fires once: after
+        -- the bubble exists, later Toggle calls just show/hide the window
+        -- as normal and leave the bubble alone.
+        if Library.BubbleWantedOnStart and not Library.Bubble and Library.ToggleBubble then
+            Library:ToggleBubble(true)
+        end
+
         return Window:Toggle(Value)
     end
 
@@ -11775,8 +11786,15 @@ function Library:CreateWindow(WindowInfo)
             Window:SetSidebarWidth(CompactWidth)
         end)
     end
-    if WindowInfo.AutoShow and not Library.ActiveLoading then
-        task.spawn(Library.Toggle)
+
+    -- BubbleWantedOnStart must be set BEFORE Library:Toggle can possibly
+    -- run (see below), since Toggle's bubble-creation hook reads it.
+    do
+        local BubbleEnabled = WindowInfo.Bubble
+        if BubbleEnabled == nil then
+            BubbleEnabled = Library.IsMobile
+        end
+        Library.BubbleWantedOnStart = BubbleEnabled
     end
 
     do
@@ -12006,40 +12024,23 @@ function Library:CreateWindow(WindowInfo)
             return Value
         end
 
-        local BubbleEnabled = WindowInfo.Bubble
-        if BubbleEnabled == nil then
-            BubbleEnabled = Library.IsMobile
-        end
+        -- BubbleWantedOnStart is already set earlier, and actual bubble
+        -- creation happens inside Library:Toggle itself -- piggybacked on
+        -- the exact call that reveals the window, whether that's the
+        -- task.spawn below (AutoShow = true, no config manager) or the
+        -- consumer/SaveManager's own call to Library:Toggle() once config
+        -- has actually finished loading (AutoShow = false). Either way the
+        -- bubble is built at the same moment the window is considered safe
+        -- to show, reading the final, settled DPI scale.
+    end
 
-        if BubbleEnabled then
-            -- Don't create the bubble synchronously here. Config restoration
-            -- (a saved UI-scale slider value, etc.) normally runs in the
-            -- consumer's own script immediately after MakeWindow(...)
-            -- returns -- i.e. AFTER this point in the call stack, not before.
-            -- Creating the bubble right now would bake its position from
-            -- whatever DPI scale happens to be active yet (the rough
-            -- first-pass default), and it would visibly pop/jump once config
-            -- applies the real saved scale a moment later.
-            --
-            -- task.defer waits until the current synchronous call stack
-            -- finishes -- which includes MakeWindow returning and any
-            -- config-restore code the consumer runs directly after it -- so
-            -- the bubble is created reading whatever DPI scale is actually
-            -- active by then, instead of a stale default.
-            task.defer(function()
-                if Library.Bubble then
-                    -- Something (e.g. ToggleBubble) already created it.
-                    return
-                end
-
-                if Library.AutoDPIScale then
-                    Library.BaseScale = Library:CalculateAutoBaseScale()
-                end
-                Library:SetDPIScale(Library.UIScaleValue or 5)
-
-                CreateBubble()
-            end)
-        end
+    -- Positioned AFTER the bubble block above (not before): Library:Toggle's
+    -- bubble-creation hook checks Library.ToggleBubble, which is only
+    -- assigned inside that block. task.spawn resumes its thread immediately
+    -- (per Roblox's scheduler), so if this ran any earlier, ToggleBubble
+    -- wouldn't exist yet and the bubble would silently never get created.
+    if WindowInfo.AutoShow and not Library.ActiveLoading then
+        task.spawn(Library.Toggle)
     end
 
     do
