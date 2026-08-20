@@ -273,21 +273,11 @@ local Library = {
     Overlays = {},
     OverlaysOrder = {},
     OverlayIdCounter = 0,
-    OverlayRegularBandCounter = 0,
-    OverlayContextBandCounter = 0,
     OverlayCascadeStep = 0,
 
     Corners = {},
 
-    -- ZIndex hierarchy:
-    -- 999 = window/UI, 1000 = UI pass-through, 1009+ = overlays,
-    -- 1109+ = context menus. Keep these bands close and predictable.
-    WindowZIndex = 999,
-    UIPassthroughZIndex = 1000,
-    OverlayZIndex = 999,
-    OverlayZIndexBandSize = 10,
-    OverlayContextMenuBaseZIndex = 1099,
-    OverlayContextMenuBandSize = 10,
+    OverlayZIndex = 1500,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -1544,31 +1534,6 @@ local function New(ClassName: string, Properties: { [string]: any }): any
     return inst
 end
 
--- Overlay ZIndex hierarchy: every GuiObject child sits exactly one layer
--- above its GuiObject parent. This prevents overlay frames/content from
--- jumping by large amounts and keeps the hierarchy predictable.
-local function NormalizeOverlayZIndex(Root: Instance)
-    if not Root or not Root:IsA("GuiObject") then
-        return
-    end
-
-    local function Normalize(Parent: Instance)
-        local ParentZ = Parent:IsA("GuiObject") and Parent.ZIndex or nil
-        if ParentZ == nil then
-            return
-        end
-
-        for _, Child in ipairs(Parent:GetChildren()) do
-            if Child:IsA("GuiObject") then
-                Child.ZIndex = ParentZ + 1
-                Normalize(Child)
-            end
-        end
-    end
-
-    Normalize(Root)
-end
-
 function Library:NewTrackedScale(Parent: Instance, Offset: number?)
     local ScaleFactor = Library.DPIScale or 1
     local Scale = New("UIScale", {
@@ -2069,11 +2034,8 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     local Id = Library.OverlayIdCounter
 
     Table.Id = Id
-    Table.LogicalId = Id
     Table.OverlayType = OverlayType
     Table.OverlayName = Name or (OverlayType .. " #" .. Id)
-    Table._OverlayRemoved = false
-    Table._OverlayReplacement = nil
 
     if not Table.SetVisible then
         function Table:SetVisible(Visible: boolean)
@@ -2100,142 +2062,23 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         end
     end
 
-    local UserRecreate = Table.Recreate
     local BaseRemove = Table.Remove
     local Removed = false
-
-    local function BuildReplacement()
-        local Entry = Library.RemovedOverlays and Library.RemovedOverlays[Id]
-        if not Entry or typeof(Entry.Recreate) ~= "function" then
-            return nil
-        end
-
-        local Existing = Table._OverlayReplacement
-        if Existing and Existing._OverlayRemoved ~= true then
-            return Existing
-        end
-
-        local Replacement = Entry.Recreate()
-        if Replacement then
-            Replacement.LogicalId = Id
-            Table._OverlayReplacement = Replacement
-            Entry.Live = Replacement
-        end
-        return Replacement
-    end
-
-    local OriginalSetVisible = Table.SetVisible
-    local OriginalIsVisible = Table.IsVisible
-    local OriginalToggle = Table.Toggle
-    local OriginalOpen = Table.Open
-    local OriginalClose = Table.Close
-    local OriginalSetText = Table.SetText
-    local OriginalSetPosition = Table.SetPosition
-    local OriginalSetSize = Table.SetSize
-
-    function Table:SetVisible(Visible: boolean)
-        if Removed then
-            local Replacement = BuildReplacement()
-            if Replacement then
-                return Replacement:SetVisible(Visible)
-            end
-            return nil
-        end
-        return OriginalSetVisible(Table, Visible)
-    end
-
-    function Table:IsVisible(): boolean
-        if Removed then
-            local Replacement = BuildReplacement()
-            return Replacement and Replacement:IsVisible() or false
-        end
-        return OriginalIsVisible(Table)
-    end
-
-    if OriginalToggle then
-        function Table:Toggle(...)
-            if Removed then
-                local Replacement = BuildReplacement()
-                return Replacement and Replacement:Toggle(...) or nil
-            end
-            return OriginalToggle(Table, ...)
-        end
-    end
-
-    if OriginalOpen then
-        function Table:Open(...)
-            if Removed then
-                local Replacement = BuildReplacement()
-                return Replacement and Replacement:Open(...) or nil
-            end
-            return OriginalOpen(Table, ...)
-        end
-    end
-
-    if OriginalClose then
-        function Table:Close(...)
-            if Removed then
-                local Replacement = BuildReplacement()
-                return Replacement and Replacement:Close(...) or nil
-            end
-            return OriginalClose(Table, ...)
-        end
-    end
-
-    if OriginalSetText then
-        function Table:SetText(...)
-            if Removed then
-                local Replacement = BuildReplacement()
-                return Replacement and Replacement:SetText(...) or nil
-            end
-            return OriginalSetText(Table, ...)
-        end
-    end
-
-    if OriginalSetPosition then
-        function Table:SetPosition(...)
-            if Removed then
-                local Replacement = BuildReplacement()
-                return Replacement and Replacement:SetPosition(...) or nil
-            end
-            return OriginalSetPosition(Table, ...)
-        end
-    end
-
-    if OriginalSetSize then
-        function Table:SetSize(...)
-            if Removed then
-                local Replacement = BuildReplacement()
-                return Replacement and Replacement:SetSize(...) or nil
-            end
-            return OriginalSetSize(Table, ...)
-        end
-    end
-
     function Table:Remove()
+        -- Idempotent: guards against double-removal (e.g. a UI element's
+        -- Destroyed connection firing after :Remove() already ran), which
+        -- would otherwise re-run BaseRemove on already-destroyed instances
+        -- or corrupt Library.OverlaysOrder a second time.
         if Removed then
             return
         end
         Removed = true
-        Table._OverlayRemoved = true
-
-        Library.RemovedOverlays = Library.RemovedOverlays or {}
-        local Factory = UserRecreate or Table.Recreate
-        if Factory then
-            Library.RemovedOverlays[Id] = {
-                Id = Id,
-                OverlayType = OverlayType,
-                OverlayName = Table.OverlayName,
-                Recreate = Factory,
-                Live = nil,
-            }
-        end
 
         if Library.Overlays[Id] == Table then
             Library.Overlays[Id] = nil
         end
 
-        for Index, Entry in ipairs(Library.OverlaysOrder) do
+        for Index, Entry in Library.OverlaysOrder do
             if Entry == Table then
                 table.remove(Library.OverlaysOrder, Index)
                 break
@@ -2248,49 +2091,11 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Library.Overlays[Id] = Table
     table.insert(Library.OverlaysOrder, Table)
 
-    local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-    if Root and Root:IsA("GuiObject") then
-        local BandIndex
-        if OverlayType == "ContextMenu" then
-            Library.OverlayContextBandCounter = Library.OverlayContextBandCounter + 1
-            BandIndex = Library.OverlayContextBandCounter
-            Root.ZIndex = Library.OverlayContextMenuBaseZIndex + (BandIndex * Library.OverlayContextMenuBandSize)
-        else
-            Library.OverlayRegularBandCounter = Library.OverlayRegularBandCounter + 1
-            BandIndex = Library.OverlayRegularBandCounter
-            Root.ZIndex = Library.OverlayZIndex + (BandIndex * Library.OverlayZIndexBandSize)
-        end
-        NormalizeOverlayZIndex(Root)
-    end
-
     return Table
 end
 
-function Library:RecreateOverlay(Id: number)
-    local Live = Library.Overlays[Id]
-    if Live then
-        return Live
-    end
-
-    local Entry = Library.RemovedOverlays and Library.RemovedOverlays[Id]
-    if not Entry or typeof(Entry.Recreate) ~= "function" then
-        return nil
-    end
-
-    local NewOverlay = Entry.Recreate()
-    if NewOverlay then
-        NewOverlay.LogicalId = Id
-        Entry.Live = NewOverlay
-    end
-    return NewOverlay
-end
-
 function Library:GetOverlay(Id: number)
-    local Overlay = Library.Overlays[Id]
-    if Overlay then
-        return Overlay
-    end
-    return Library:RecreateOverlay(Id)
+    return Library.Overlays[Id]
 end
 
 function Library:GetOverlays(OverlayType: string?)
@@ -2309,7 +2114,7 @@ function Library:GetOverlays(OverlayType: string?)
 end
 
 function Library:SetOverlayVisible(Id: number, Visible: boolean)
-    local Overlay = Library:GetOverlay(Id)
+    local Overlay = Library.Overlays[Id]
     if Overlay then
         Overlay:SetVisible(Visible)
     end
@@ -2317,7 +2122,7 @@ function Library:SetOverlayVisible(Id: number, Visible: boolean)
 end
 
 function Library:ToggleOverlay(Id: number)
-    local Overlay = Library:GetOverlay(Id)
+    local Overlay = Library.Overlays[Id]
     if Overlay then
         Overlay:SetVisible(not Overlay:IsVisible())
     end
@@ -2332,51 +2137,15 @@ function Library:RemoveOverlay(Id: number)
 end
 
 function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
-    local Seen = {}
-
     for _, Overlay in Library:GetOverlays(OverlayType) do
-        Seen[Overlay.LogicalId or Overlay.Id] = true
         Overlay:SetVisible(Visible)
-    end
-
-    -- Removed overlays still exist as logical definitions. Recreate them on
-    -- demand so RemoveAllOverlays() is reversible and the manager never loses
-    -- the ability to show an overlay again.
-    for Id, Entry in pairs(Library.RemovedOverlays or {}) do
-        if (not OverlayType or Entry.OverlayType == OverlayType) and not Seen[Id] then
-            local Overlay = Library:RecreateOverlay(Id)
-            if Overlay then
-                Overlay:SetVisible(Visible)
-            end
-        end
     end
 end
 
 function Library:RemoveAllOverlays(OverlayType: string?)
-    local RemovedIds = {}
-    for _, Overlay in ipairs(Library:GetOverlays(OverlayType)) do
-        table.insert(RemovedIds, Overlay.Id)
+    for _, Overlay in Library:GetOverlays(OverlayType) do
         Overlay:Remove()
     end
-    return RemovedIds
-end
-
-function Library:RecreateOverlays(OverlayType: string?)
-    local Results = {}
-    local Pending = {}
-    for Id, Entry in pairs(Library.RemovedOverlays or {}) do
-        if not OverlayType or Entry.OverlayType == OverlayType then
-            table.insert(Pending, Id)
-        end
-    end
-    table.sort(Pending)
-    for _, Id in ipairs(Pending) do
-        local Overlay = Library:RecreateOverlay(Id)
-        if Overlay then
-            table.insert(Results, Overlay)
-        end
-    end
-    return Results
 end
 
 function Library:AddDraggableLabel(Text: string)
@@ -2440,11 +2209,6 @@ function Library:AddDraggableLabel(Text: string)
         Label:Destroy()
     end
 
-    Table.Recreate = function()
-        return Library:AddDraggableLabel(Text)
-    end
-
-    NormalizeOverlayZIndex(Label)
     Library:RegisterOverlay("DraggableLabel", Text, Table)
 
     return Table
@@ -2504,11 +2268,6 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
         Button:Destroy()
     end
 
-    Table.Recreate = function()
-        return Library:AddDraggableButton(Text, Func, ExcludeScaling)
-    end
-
-    NormalizeOverlayZIndex(Button)
     Library:RegisterOverlay("DraggableButton", Text, Table)
 
     return Table
@@ -2608,11 +2367,6 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
         Label.Text = NewText
     end
 
-    Table.Recreate = function()
-        return Library:AddDraggableToggle(Text, Default, Callback)
-    end
-
-    NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableToggle", Text, Table)
 
     return Table
@@ -2693,11 +2447,6 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
 
     Table.Holder = Holder
 
-    Table.Recreate = function()
-        return Library:AddDraggableProgress(Text, Default, Max)
-    end
-
-    NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableProgress", Text, Table)
 
     return Table
@@ -2907,7 +2656,7 @@ function Library:AddDraggableMenu(Name: string)
     end)
     Container.ChildRemoved:Connect(QueueResize)
 
-    Container.ZIndex = BaseZIndex + 1
+    Container.ZIndex = BaseZIndex + 100
 
     local MenuCollapsed = false
     local function SetMenuCollapsed(Collapsed: boolean)
@@ -2952,11 +2701,6 @@ function Library:AddDraggableMenu(Name: string)
     end
     setmetatable(ContainerObj, BaseSection)
 
-    ContainerObj.Recreate = function()
-        return Library:AddDraggableMenu(Name)
-    end
-
-    NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableMenu", Name, ContainerObj)
 
     -- IMPORTANT: route the close button through ContainerObj:Remove() (which
@@ -3010,7 +2754,7 @@ function Library:AddContextMenu(
             Size = typeof(Size) == "function" and Size() or Size,
             TopImage = "rbxasset://textures/ui/Scroll/scroll-middle.png",
             Visible = false,
-            ZIndex = Library.OverlayContextMenuBaseZIndex,
+            ZIndex = Library.OverlayZIndex,
             Parent = ParentGui,
         })
     else
@@ -3018,7 +2762,7 @@ function Library:AddContextMenu(
             BackgroundColor3 = "BackgroundColor",
             Size = typeof(Size) == "function" and Size() or Size,
             Visible = false,
-            ZIndex = Library.OverlayContextMenuBaseZIndex,
+            ZIndex = Library.OverlayZIndex,
             Parent = ParentGui,
         })
     end
@@ -3205,15 +2949,9 @@ function Library:AddContextMenu(
 
     function Table:Open()
         if Removed then
-            -- Removing an overlay destroys its current Instances, but the
-            -- overlay definition remains recreatable. Allow the old context
-            -- menu handle to be opened again instead of permanently
-            -- dead-ending it after :Remove().
-            local Recreated = Library:RecreateOverlay(Table.Id)
-            if Recreated and typeof(Recreated.Open) == "function" then
-                return Recreated:Open()
-            end
-            return Recreated
+            -- Menu instance is destroyed; silently refuse instead of
+            -- erroring or writing properties onto a dead Instance.
+            return
         end
 
         if CurrentMenu == Table then
@@ -3232,7 +2970,6 @@ function Library:AddContextMenu(
         end
 
         Menu.Visible = true
-        NormalizeOverlayZIndex(Menu)
 
         -- Guard against a stray leftover connection from a previous Open()
         -- call that never got cleaned up (see Close()/Remove() below).
@@ -3324,24 +3061,6 @@ function Library:AddContextMenu(
         end
 
         Menu:Destroy()
-    end
-
-    Table.Recreate = function()
-        return Library:AddContextMenu(Holder, Size, Offset, List, ActiveCallback, IgnoreCornerRadius)
-    end
-
-    -- Keep the creation recipe separate from the destroyed Menu instance.
-    -- This lets Remove()/RemoveAllOverlays() destroy the current menu while
-    -- still allowing the same logical context menu to be created again.
-    Table.Recreate = function()
-        return Library:AddContextMenu(
-            Holder,
-            Size,
-            Offset,
-            List,
-            ActiveCallback,
-            IgnoreCornerRadius
-        )
     end
 
     Library:RegisterOverlay("ContextMenu", nil, Table)
@@ -8087,9 +7806,6 @@ do
             ClipsDescendants = true,
             Size = UDim2.new(1, 0, 0, Info.Height),
             Visible = Passthrough.Visible,
-            -- Pass-through belongs immediately above the window, but below
-            -- every overlay/context-menu band.
-            ZIndex = Library.UIPassthroughZIndex,
 
             Parent = Container,
         })
@@ -8103,7 +7819,7 @@ do
             end
         end)
 
-        local PassthroughZIndex = Library.UIPassthroughZIndex
+        local PassthroughZIndex = Holder.ZIndex + 1
         Passthrough.Instance.ZIndex = PassthroughZIndex
         for _, Descendant in Passthrough.Instance:GetDescendants() do
             if Descendant:IsA("GuiObject") then
@@ -8146,7 +7862,7 @@ do
                 end
             end)
 
-            local PassthroughZIndex = Library.UIPassthroughZIndex
+            local PassthroughZIndex = Holder.ZIndex + 1
             Passthrough.Instance.ZIndex = PassthroughZIndex
             for _, Descendant in Passthrough.Instance:GetDescendants() do
                 if Descendant:IsA("GuiObject") then
@@ -9121,7 +8837,6 @@ function Library:CreateWindow(WindowInfo)
             end,
             Name = "Main",
             Text = "",
-            ZIndex = Library.WindowZIndex,
             Position = WindowInfo.Position,
             Size = WindowInfo.Size,
             Visible = false,
@@ -13454,7 +13169,6 @@ function Library:CreateLoading(LoadingInfo)
 
     local MainFrame = New("TextButton", {
         Name = "Main",
-        ZIndex = Library.WindowZIndex,
         AnchorPoint = Vector2.new(0.5, 0.5),
         BackgroundColor3 = function()
             return Library:GetBetterColor(Library.Scheme.BackgroundColor, -1)
