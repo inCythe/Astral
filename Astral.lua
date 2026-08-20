@@ -1093,32 +1093,37 @@ function Library:CalculateAutoDPIScale(Rounding: number?, BaseSize: Vector2?): n
     -- =========================================================
     -- DPI MODEL
     --
-    -- DPI 5 = 1.0x = BASE UI SIZE
+    -- DPI 5 = 1.00x = BASE UI SIZE
     --
-    -- 1  = 0.6x
-    -- 2  = 0.7x
-    -- 3  = 0.8x
-    -- 4  = 0.9x
-    -- 5  = 1.0x
-    -- 6  = 1.1x
-    -- 7  = 1.2x
-    -- 8  = 1.3x
-    -- 9  = 1.4x
-    -- 10 = 1.5x
+    -- DPI 1-5 are compressed more aggressively so small/mobile
+    -- viewports can shrink the UI enough to actually fit.
+    --
+    -- DPI 1  = 0.40x
+    -- DPI 2  = 0.55x
+    -- DPI 3  = 0.70x
+    -- DPI 4  = 0.85x
+    -- DPI 5  = 1.00x  <- BASE
+    -- DPI 6  = 1.10x
+    -- DPI 7  = 1.20x
+    -- DPI 8  = 1.30x
+    -- DPI 9  = 1.40x
+    -- DPI 10 = 1.50x
     -- =========================================================
 
     local BaseDPI = 5
 
     -- Keep some room around the UI so it doesn't touch the screen edges.
-    local ScreenPadding = 32
+    local ScreenPadding = 16
 
     local AvailableWidth = math.max(ViewportSize.X - ScreenPadding * 2, 1)
     local AvailableHeight = math.max(ViewportSize.Y - ScreenPadding * 2, 1)
 
     -- BaseSize must be the BASE / logical window size (WindowInfo.Size).
     -- We never modify that size directly -- we only determine what
-    -- UIScale is required to make it fit the viewport.
-    BaseSize = BaseSize or Library.OriginalMinSize
+    -- UIScale is required to make it fit the viewport. Library.BaseWindowSize
+    -- is populated by CreateWindow, so this also works when called from
+    -- outside CreateWindow's scope (e.g. a manual DPI slider/button).
+    BaseSize = BaseSize or Library.BaseWindowSize or Library.OriginalMinSize
 
     local BaseWidth = BaseSize.X
     local BaseHeight = BaseSize.Y
@@ -1133,9 +1138,14 @@ function Library:CalculateAutoDPIScale(Rounding: number?, BaseSize: Vector2?): n
 
     local FitScale = math.min(WidthScale, HeightScale)
 
-    -- Convert UIScale back into the DPI system.
-    -- Scale = 0.5 + DPI * 0.1  =>  DPI = (Scale - 0.5) / 0.1
-    local DPIValue = (FitScale - 0.5) / 0.1
+    -- Convert UIScale back into the DPI system using the piecewise
+    -- 0.40..1.00..1.50 curve above.
+    local DPIValue
+    if FitScale <= 1 then
+        DPIValue = 1 + ((FitScale - 0.40) / 0.60) * 4
+    else
+        DPIValue = 5 + ((FitScale - 1.00) / 0.50) * 5
+    end
 
     -- Never allow the automatic system to go outside 1-10.
     DPIValue = math.clamp(DPIValue, 1, 10)
@@ -1151,7 +1161,16 @@ end
 function Library:SetDPIScale(DPIScale: number)
 
     DPIScale = math.clamp(tonumber(DPIScale) or 5, 1, 10)
-    local ScaleFactor = 0.5 + (DPIScale * 0.1)
+
+    -- Same piecewise curve as CalculateAutoDPIScale:
+    -- DPI 1..5   maps to 0.40..1.00
+    -- DPI 5..10  maps to 1.00..1.50
+    local ScaleFactor
+    if DPIScale <= 5 then
+        ScaleFactor = 0.40 + ((DPIScale - 1) / 4) * 0.60
+    else
+        ScaleFactor = 1.00 + ((DPIScale - 5) / 5) * 0.50
+    end
 
     -- Store both the actual DPI and the resulting UIScale.
     Library.DPIValue = DPIScale
@@ -8402,6 +8421,7 @@ function Library:CreateWindow(WindowInfo)
     Library.MinSize = Library.OriginalMinSize
 
     local BaseWindowSize = Vector2.new(WindowInfo.Size.X.Offset, WindowInfo.Size.Y.Offset)
+    Library.BaseWindowSize = BaseWindowSize
 
     if typeof(WindowInfo.Font) == "EnumItem" then
         WindowInfo.Font = Font.fromEnum(WindowInfo.Font)
@@ -12696,7 +12716,13 @@ function Library:CreateLoading(LoadingInfo)
     local InitialScale
     if LoadingInfo.DPIScale ~= nil then
         local DPIValue = math.clamp(tonumber(LoadingInfo.DPIScale) or 5, 1, 10)
-        InitialScale = (0.5 + (DPIValue * 0.1)) - MobileOffset
+        local ScaleFactor
+        if DPIValue <= 5 then
+            ScaleFactor = 0.40 + ((DPIValue - 1) / 4) * 0.60
+        else
+            ScaleFactor = 1.00 + ((DPIValue - 5) / 5) * 0.50
+        end
+        InitialScale = ScaleFactor - MobileOffset
     else
         InitialScale = (Library.IsMobile and 0.8 or 1)
     end

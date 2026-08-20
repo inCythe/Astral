@@ -1601,13 +1601,18 @@ SaveManager:IgnoreThemeSettings()
 -- instead of being overwritten by the next auto-resize; there's a button
 -- underneath to go back to automatic sizing at any time.
 --
+-- DPI 5 is always 100% (the window's original logical size). DPI 1..5
+-- maps to 40%..100% and DPI 5..10 maps to 100%..150%, so very small
+-- viewports (phones) can shrink the whole UI down far enough to actually
+-- fit rather than getting stuck at a 60% floor.
+--
 -- Library:SetDPIScale(Value: number 1-10) rescales the entire UI --
 -- window, sidebar, dropdowns, notifications, overlays, and any active
 -- loading screen -- everything registered in Library.Scales.
 local DisplaySection = SettingsTab:AddSection({ Name = "Display", IconName = "sliders-horizontal" })
 DisplaySection:AddSlider("UIScaleSlider", {
     Text = "UI Scale",
-    Default = Library:CalculateAutoDPIScale(1),
+    Default = Library:CalculateAutoDPIScale(1, Library.BaseWindowSize),
     Min = 1,
     Max = 10,
     Rounding = 1,
@@ -1620,9 +1625,9 @@ DisplaySection:AddButton({
     Text = "Reset to Automatic Scaling",
     Func = function()
         Library.AutoDPIScale = true
-        local AutoValue = Library:CalculateAutoDPIScale()
+        local AutoValue = Library:CalculateAutoDPIScale(nil, Library.BaseWindowSize)
         Library:SetDPIScale(AutoValue)
-        Library.Options.UIScaleSlider:SetValue(Library:CalculateAutoDPIScale(1))
+        Library.Options.UIScaleSlider:SetValue(Library:CalculateAutoDPIScale(1, Library.BaseWindowSize))
         Library:Notify({ Title = "Display", Description = "UI Scale now follows your screen size automatically.", Time = 3 })
     end,
 })
