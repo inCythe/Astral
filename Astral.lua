@@ -1152,13 +1152,18 @@ function Library:SetDPIScale(DPIScale: number)
 
     -- Keep the bubble's on-screen position valid after a scale change.
     -- UIScale only multiplies AbsoluteSize; it never touches Position, so
-    -- Bubble.Position's offset is already real screen pixels -- same space
-    -- as AbsolutePosition/AbsoluteSize. No scale conversion needed, matching
-    -- SnapToSide.
+    -- Bubble.Position's offset is real screen pixels. IMPORTANT: we can't
+    -- read Bubble.AbsoluteSize here -- the UIScale.Scale write above hasn't
+    -- propagated through Roblox's UI layout engine yet this frame, so
+    -- AbsoluteSize would still report the OLD size (this is why the bubble
+    -- looked "stuck" at its old scaled position until something else, like a
+    -- drag, forced a fresh read). Compute the rendered size directly from
+    -- ScaleFactor instead, the same way MainFrame's re-centering above does.
     if Library.Bubble and Library.Bubble.Parent and ScreenGui then
         local Bubble = Library.Bubble
-        local RenderedWidth = Bubble.AbsoluteSize.X
-        local RenderedHeight = Bubble.AbsoluteSize.Y
+        local BubbleScaleFactor = (Library.BubbleScale and Library.BubbleScale.Scale) or ScaleFactor
+        local RenderedWidth = Bubble.Size.X.Offset * BubbleScaleFactor
+        local RenderedHeight = Bubble.Size.Y.Offset * BubbleScaleFactor
 
         local ScreenSize = ScreenGui.AbsoluteSize
         local Y = Bubble.AbsolutePosition.Y
