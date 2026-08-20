@@ -277,7 +277,9 @@ local Library = {
 
     Corners = {},
 
-    OverlayZIndex = 1500,
+    WindowZIndex = 999,
+    OverlayZIndex = 1009,
+    OverlayZIndexBandSize = 10,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -2089,21 +2091,32 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
 
     local BaseRemove = Table.Remove
     local Removed = false
+
     function Table:Remove()
-        -- Idempotent: guards against double-removal (e.g. a UI element's
-        -- Destroyed connection firing after :Remove() already ran), which
-        -- would otherwise re-run BaseRemove on already-destroyed instances
-        -- or corrupt Library.OverlaysOrder a second time.
         if Removed then
             return
         end
         Removed = true
 
+        -- Keep a recreation factory when the overlay supplied one. Removing
+        -- an overlay must not make the corresponding UI feature permanently
+        -- unavailable. The old instance is destroyed, but its creation recipe
+        -- remains available through Library:RecreateOverlay(Id).
+        if Table.Recreate then
+            Library.RemovedOverlays = Library.RemovedOverlays or {}
+            Library.RemovedOverlays[Id] = {
+                Id = Id,
+                OverlayType = OverlayType,
+                OverlayName = Table.OverlayName,
+                Recreate = Table.Recreate,
+            }
+        end
+
         if Library.Overlays[Id] == Table then
             Library.Overlays[Id] = nil
         end
 
-        for Index, Entry in Library.OverlaysOrder do
+        for Index, Entry in ipairs(Library.OverlaysOrder) do
             if Entry == Table then
                 table.remove(Library.OverlaysOrder, Index)
                 break
@@ -2116,26 +2129,27 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Library.Overlays[Id] = Table
     table.insert(Library.OverlaysOrder, Table)
 
-    -- Give every overlay its own ZIndex band. Previously every overlay root
-    -- used the same OverlayZIndex (1500), which meant the text/content of
-    -- different overlays all ended up on the same ZIndex and could visually
-    -- overlap/clip each other when the overlays stacked.
-    --
-    -- Each overlay gets one base layer, then NormalizeOverlayZIndex gives its
-    -- descendants +1 per level:
-    --   overlay frame = base
-    --   direct content = base + 1
-    --   nested content = base + 2
-    --
-    -- Keep the band close to OverlayZIndex so this does not interfere with
-    -- the library's other major UI layers.
+    -- Each overlay gets its own ZIndex band. The root of one overlay is never
+    -- allowed to share a layer with the content of another overlay.
+    -- Within one overlay, every child is exactly parent + 1.
     local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
     if Root and Root:IsA("GuiObject") then
-        Root.ZIndex = Library.OverlayZIndex + Id
+        Root.ZIndex = Library.OverlayZIndex + (Id * Library.OverlayZIndexBandSize)
         NormalizeOverlayZIndex(Root)
     end
 
     return Table
+end
+
+function Library:RecreateOverlay(Id: number)
+    local Entry = Library.RemovedOverlays and Library.RemovedOverlays[Id]
+    if not Entry or typeof(Entry.Recreate) ~= "function" then
+        return nil
+    end
+
+    Library.RemovedOverlays[Id] = nil
+    local NewOverlay = Entry.Recreate()
+    return NewOverlay
 end
 
 function Library:GetOverlay(Id: number)
@@ -2187,9 +2201,30 @@ function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
 end
 
 function Library:RemoveAllOverlays(OverlayType: string?)
-    for _, Overlay in Library:GetOverlays(OverlayType) do
+    local RemovedIds = {}
+    for _, Overlay in ipairs(Library:GetOverlays(OverlayType)) do
+        table.insert(RemovedIds, Overlay.Id)
         Overlay:Remove()
     end
+    return RemovedIds
+end
+
+function Library:RecreateOverlays(OverlayType: string?)
+    local Results = {}
+    local Pending = {}
+    for Id, Entry in pairs(Library.RemovedOverlays or {}) do
+        if not OverlayType or Entry.OverlayType == OverlayType then
+            table.insert(Pending, Id)
+        end
+    end
+    table.sort(Pending)
+    for _, Id in ipairs(Pending) do
+        local Overlay = Library:RecreateOverlay(Id)
+        if Overlay then
+            table.insert(Results, Overlay)
+        end
+    end
+    return Results
 end
 
 function Library:AddDraggableLabel(Text: string)
@@ -2253,6 +2288,10 @@ function Library:AddDraggableLabel(Text: string)
         Label:Destroy()
     end
 
+    Table.Recreate = function()
+        return Library:AddDraggableLabel(Text)
+    end
+
     NormalizeOverlayZIndex(Label)
     Library:RegisterOverlay("DraggableLabel", Text, Table)
 
@@ -2311,6 +2350,10 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
 
     function Table:Remove()
         Button:Destroy()
+    end
+
+    Table.Recreate = function()
+        return Library:AddDraggableButton(Text, Func, ExcludeScaling)
     end
 
     NormalizeOverlayZIndex(Button)
@@ -2413,6 +2456,10 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
         Label.Text = NewText
     end
 
+    Table.Recreate = function()
+        return Library:AddDraggableToggle(Text, Default, Callback)
+    end
+
     NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableToggle", Text, Table)
 
@@ -2493,6 +2540,10 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
     Library:MakeDraggable(Holder, Holder, true)
 
     Table.Holder = Holder
+
+    Table.Recreate = function()
+        return Library:AddDraggableProgress(Text, Default, Max)
+    end
 
     NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableProgress", Text, Table)
@@ -2748,6 +2799,10 @@ function Library:AddDraggableMenu(Name: string)
         return Holder.Parent ~= nil and Holder.Visible
     end
     setmetatable(ContainerObj, BaseSection)
+
+    ContainerObj.Recreate = function()
+        return Library:AddDraggableMenu(Name)
+    end
 
     NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableMenu", Name, ContainerObj)
@@ -3111,6 +3166,10 @@ function Library:AddContextMenu(
         end
 
         Menu:Destroy()
+    end
+
+    Table.Recreate = function()
+        return Library:AddContextMenu(Holder, Size, Offset, List, ActiveCallback, IgnoreCornerRadius)
     end
 
     Library:RegisterOverlay("ContextMenu", nil, Table)
