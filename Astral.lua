@@ -2013,7 +2013,7 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     if not Table.SetVisible then
         function Table:SetVisible(Visible: boolean)
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-            if Root then
+            if Root and Root.Parent then
                 Root.Visible = Visible
             end
         end
@@ -2022,7 +2022,7 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     if not Table.IsVisible then
         function Table:IsVisible(): boolean
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-            return Root and Root.Visible or false
+            return Root ~= nil and Root.Parent ~= nil and Root.Visible or false
         end
     end
 
@@ -2158,15 +2158,24 @@ function Library:AddDraggableLabel(Text: string)
     Table.Label = Label
 
     function Table:SetText(Text: string)
+        if not Label.Parent then
+            return
+        end
         Label.Text = Text
     end
 
     function Table:SetVisible(Visible: boolean)
+        if not Label.Parent then
+            -- Instance already destroyed (overlay was removed). Silently
+            -- ignore instead of erroring, matching the behavior of
+            -- Library:SetOverlayVisible/GetOverlay once the Id is unregistered.
+            return
+        end
         Label.Visible = Visible
     end
 
     function Table:IsVisible(): boolean
-        return Label.Visible
+        return Label.Parent ~= nil and Label.Visible
     end
 
     function Table:Remove()
@@ -2218,11 +2227,14 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
     Table:SetText(Text)
 
     function Table:SetVisible(Visible: boolean)
+        if not Button.Parent then
+            return
+        end
         Button.Visible = Visible
     end
 
     function Table:IsVisible(): boolean
-        return Button.Visible
+        return Button.Parent ~= nil and Button.Visible
     end
 
     function Table:Remove()
@@ -2652,10 +2664,13 @@ function Library:AddDraggableMenu(Name: string)
         Holder:Destroy()
     end
     function ContainerObj:SetVisible(Visible: boolean)
+        if not Holder.Parent then
+            return
+        end
         Holder.Visible = Visible
     end
     function ContainerObj:IsVisible(): boolean
-        return Holder.Visible
+        return Holder.Parent ~= nil and Holder.Visible
     end
     setmetatable(ContainerObj, BaseSection)
 
@@ -2741,6 +2756,8 @@ function Library:AddContextMenu(
         Size = Size,
     }
 
+    local Removed = false
+
     if List then
         Table.List = New("UIListLayout", {
             Parent = Menu,
@@ -2748,6 +2765,12 @@ function Library:AddContextMenu(
     end
 
     function Table:Open()
+        if Removed then
+            -- Menu instance is destroyed; silently refuse instead of
+            -- erroring or writing properties onto a dead Instance.
+            return
+        end
+
         if CurrentMenu == Table then
             return
         elseif CurrentMenu then
@@ -2775,6 +2798,13 @@ function Library:AddContextMenu(
 
         Menu.Visible = true
 
+        -- Guard against a stray leftover connection from a previous Open()
+        -- call that never got cleaned up (see Close()/Remove() below).
+        if Table.Signal then
+            Table.Signal:Disconnect()
+            Table.Signal = nil
+        end
+
         Table.Signal = Holder:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
             if typeof(Offset) == "function" then
                 Menu.Position = UDim2.fromOffset(
@@ -2791,15 +2821,16 @@ function Library:AddContextMenu(
     end
 
     function Table:Close()
+        if Table.Signal then
+            Table.Signal:Disconnect()
+            Table.Signal = nil
+        end
+
         if CurrentMenu ~= Table then
             return
         end
         Menu.Visible = false
 
-        if Table.Signal then
-            Table.Signal:Disconnect()
-            Table.Signal = nil
-        end
         Table.Active = false
         CurrentMenu = nil
         if typeof(ActiveCallback) == "function" then
@@ -2808,6 +2839,9 @@ function Library:AddContextMenu(
     end
 
     function Table:Toggle()
+        if Removed then
+            return
+        end
         if Table.Active then
             Table:Close()
         else
@@ -2833,9 +2867,32 @@ function Library:AddContextMenu(
     end
 
     function Table:Remove()
-        if CurrentMenu == Table then
-            Table:Close()
+        if Removed then
+            return
         end
+        Removed = true
+
+        -- Always tear down the reposition signal, even if this menu wasn't
+        -- the currently-open one — previously this only happened inside
+        -- Close(), which early-outs when CurrentMenu ~= Table. That left the
+        -- AbsolutePosition connection alive on a destroyed Menu instance,
+        -- and if Holder got reused by a later context menu, the leaked
+        -- signal would keep firing and fighting the new menu's own
+        -- positioning whenever Holder moved.
+        if Table.Signal then
+            Table.Signal:Disconnect()
+            Table.Signal = nil
+        end
+
+        if CurrentMenu == Table then
+            Menu.Visible = false
+            Table.Active = false
+            CurrentMenu = nil
+            if typeof(ActiveCallback) == "function" then
+                Library:SafeCallback(ActiveCallback, false)
+            end
+        end
+
         Menu:Destroy()
     end
 
