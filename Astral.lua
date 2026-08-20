@@ -1590,6 +1590,12 @@ local ScreenGui = New("ScreenGui", {
     DisplayOrder = 998,
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Global,
+    -- Without this, Roblox reserves ~36px at the top of the screen for the
+    -- default topbar and treats THAT reduced area as "the screen" for any
+    -- 0.5/0.5 scale positioning -- so MainFrame's centering math (which
+    -- assumes it's centering within the full viewport) ends up visibly
+    -- offset toward the top, with a larger gap at the bottom than the top.
+    IgnoreGuiInset = true,
 })
 ParentUI(ScreenGui)
 Library.ScreenGui = ScreenGui
@@ -12741,7 +12747,8 @@ function Library:CreateLoading(LoadingInfo)
     local ScreenGui = New("ScreenGui", {
         Name = "AstralLoading",
         DisplayOrder = 999,
-        ResetOnSpawn = false
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
     })
     ParentUI(ScreenGui)
     Loading.ScreenGui = ScreenGui
