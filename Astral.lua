@@ -286,12 +286,6 @@ local Library = {
     Toggled = false,
     Unloaded = false,
 
-    -- Mobile context-menu behavior. Touch devices do not have a native
-    -- right-click, so context menus can also be opened by holding a UI
-    -- element for this long without moving the finger too far.
-    MobileLongPressDuration = 0.55,
-    MobileLongPressMoveTolerance = 12,
-
     Labels = Labels,
     Buttons = Buttons,
     Toggles = Toggles,
@@ -2801,118 +2795,6 @@ function Library:AddContextMenu(
 
     local Removed = false
 
-    -- Touch equivalent of MouseButton2Click.  This is installed centrally
-    -- in AddContextMenu so every context menu gets mobile support without
-    -- each widget having to implement its own long-press timer.
-    local LongPressInput = nil
-    local LongPressStartedAt = 0
-    local LongPressTriggered = false
-    local LongPressCancelled = false
-    local LongPressConnections = {}
-
-    function Table:IsLongPressConsumed()
-        return LongPressTriggered
-    end
-
-    function Table:ClearLongPressConsumed()
-        LongPressTriggered = false
-    end
-
-    local function DisconnectLongPressConnections()
-        for Index = #LongPressConnections, 1, -1 do
-            local Connection = table.remove(LongPressConnections, Index)
-            if Connection and Connection.Connected then
-                Connection:Disconnect()
-            end
-        end
-    end
-
-    if Library.IsMobile and Holder:IsA("GuiObject") then
-        table.insert(LongPressConnections, Holder.InputBegan:Connect(function(Input)
-            if Removed or not Library.IsMobile then
-                return
-            end
-
-            if Input.UserInputType ~= Enum.UserInputType.Touch then
-                return
-            end
-
-            if UserInputService:GetFocusedTextBox() then
-                return
-            end
-
-            LongPressInput = Input
-            LongPressStartedAt = os.clock()
-            LongPressTriggered = false
-            LongPressCancelled = false
-
-            task.delay(Library.MobileLongPressDuration, function()
-                if Removed
-                    or LongPressInput ~= Input
-                    or LongPressCancelled
-                    or LongPressTriggered
-                    or not Input
-                then
-                    return
-                end
-
-                if UserInputService:GetFocusedTextBox() then
-                    return
-                end
-
-                if os.clock() - LongPressStartedAt < Library.MobileLongPressDuration then
-                    return
-                end
-
-                LongPressTriggered = true
-                Table:Open()
-
-                -- MouseButton1Click can be generated after the touch ends.
-                -- Keep the consumed flag alive briefly so a mobile long press
-                -- cannot also execute the normal left-click action.
-                task.delay(0.35, function()
-                    if LongPressInput == Input then
-                        LongPressInput = nil
-                        LongPressCancelled = false
-                        LongPressTriggered = false
-                    end
-                end)
-            end)
-        end))
-
-        table.insert(LongPressConnections, UserInputService.InputChanged:Connect(function(Input)
-            if LongPressInput ~= Input or LongPressCancelled or LongPressTriggered then
-                return
-            end
-
-            if Input.UserInputType ~= Enum.UserInputType.Touch then
-                return
-            end
-
-            local StartPosition = LongPressInput.Position
-            local CurrentPosition = Input.Position
-            local Delta = CurrentPosition - StartPosition
-            local Tolerance = Library.MobileLongPressMoveTolerance
-
-            if Delta.Magnitude > Tolerance then
-                LongPressCancelled = true
-                LongPressInput = nil
-            end
-        end))
-
-        table.insert(LongPressConnections, UserInputService.InputEnded:Connect(function(Input)
-            if LongPressInput ~= Input then
-                return
-            end
-
-            -- Do not cancel the menu after it has already opened.
-            if not LongPressTriggered then
-                LongPressCancelled = true
-                LongPressInput = nil
-            end
-        end))
-    end
-
     if List then
         Table.List = New("UIListLayout", {
             Parent = Menu,
@@ -3034,10 +2916,6 @@ function Library:AddContextMenu(
             return
         end
         Removed = true
-        DisconnectLongPressConnections()
-        LongPressInput = nil
-        LongPressCancelled = true
-        LongPressTriggered = false
 
         -- Always tear down the reposition signal, even if this menu wasn't
         -- the currently-open one — previously this only happened inside
@@ -3864,14 +3742,6 @@ do
         end
 
         Picker.MouseButton1Click:Connect(function()
-            -- On mobile, a long press is the context-menu/right-click
-            -- equivalent. Consume the generated left-click so it does not
-            -- immediately start key picking after opening the menu.
-            if MenuTable:IsLongPressConsumed() then
-                MenuTable:ClearLongPressConsumed()
-                return
-            end
-
             if Picking then
                 return
             end
@@ -4535,16 +4405,7 @@ do
             ColorPicker:Update()
         end
 
-        Holder.MouseButton1Click:Connect(function()
-            -- A mobile long press opens the context menu instead of the
-            -- normal color-picker left-click action.
-            if ContextMenu:IsLongPressConsumed() then
-                ContextMenu:ClearLongPressConsumed()
-                return
-            end
-
-            ColorMenu:Toggle()
-        end)
+        Holder.MouseButton1Click:Connect(function() ColorMenu:Toggle() end)
         Holder.MouseButton2Click:Connect(ContextMenu.Toggle)
 
         SatVipMap.InputBegan:Connect(function(Input: InputObject)
