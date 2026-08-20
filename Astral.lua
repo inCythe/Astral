@@ -1077,102 +1077,47 @@ function Library:UpdateColorsUsingRegistry()
     end
 end
 
-function Library:CalculateAutoDPIScale(Rounding: number?, BaseSize: Vector2?): number
+function Library:CalculateAutoBaseScale(): number
     local Camera = workspace.CurrentCamera
-
-    if not Camera then
-        return 5
+    local ViewportSize: Vector2 = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
+    if RunService:IsStudio() and ViewportSize.X <= 5 and ViewportSize.Y <= 5 then
+        return 1
     end
 
-    local ViewportSize = Camera.ViewportSize
+    local WinWidth = (Library.MainFrame and Library.MainFrame.Size.X.Offset) or 720
+    local WinHeight = (Library.MainFrame and Library.MainFrame.Size.Y.Offset) or 600
 
-    if ViewportSize.X <= 5 or ViewportSize.Y <= 5 then
-        return 5
-    end
+    local MarginX = 36
+    local MarginY = 36
+    local AvailableX = math.max(100, ViewportSize.X - MarginX)
+    local AvailableY = math.max(100, ViewportSize.Y - MarginY)
 
-    -- =========================================================
-    -- DPI MODEL
-    --
-    -- DPI 5 = 1.00x = BASE UI SIZE
-    --
-    -- DPI 1-5 are compressed more aggressively so small/mobile
-    -- viewports can shrink the UI enough to actually fit.
-    --
-    -- DPI 1  = 0.40x
-    -- DPI 2  = 0.55x
-    -- DPI 3  = 0.70x
-    -- DPI 4  = 0.85x
-    -- DPI 5  = 1.00x  <- BASE
-    -- DPI 6  = 1.10x
-    -- DPI 7  = 1.20x
-    -- DPI 8  = 1.30x
-    -- DPI 9  = 1.40x
-    -- DPI 10 = 1.50x
-    -- =========================================================
+    local ScaleX = AvailableX / WinWidth
+    local ScaleY = AvailableY / WinHeight
+    local FitScale = math.min(ScaleX, ScaleY)
 
-    local BaseDPI = 5
+    return math.clamp(FitScale, 0.25, 1)
+end
 
-    -- Keep some room around the UI so it doesn't touch the screen edges.
-    local ScreenPadding = 16
-
-    local AvailableWidth = math.max(ViewportSize.X - ScreenPadding * 2, 1)
-    local AvailableHeight = math.max(ViewportSize.Y - ScreenPadding * 2, 1)
-
-    -- BaseSize must be the BASE / logical window size (WindowInfo.Size).
-    -- We never modify that size directly -- we only determine what
-    -- UIScale is required to make it fit the viewport. Library.BaseWindowSize
-    -- is populated by CreateWindow, so this also works when called from
-    -- outside CreateWindow's scope (e.g. a manual DPI slider/button).
-    BaseSize = BaseSize or Library.BaseWindowSize or Library.OriginalMinSize
-
-    local BaseWidth = BaseSize.X
-    local BaseHeight = BaseSize.Y
-
-    if BaseWidth <= 0 or BaseHeight <= 0 then
-        return BaseDPI
-    end
-
-    -- Find the largest scale that fits the viewport.
-    local WidthScale = AvailableWidth / BaseWidth
-    local HeightScale = AvailableHeight / BaseHeight
-
-    local FitScale = math.min(WidthScale, HeightScale)
-
-    -- Convert UIScale back into the DPI system using the piecewise
-    -- 0.40..1.00..1.50 curve above.
-    local DPIValue
-    if FitScale <= 1 then
-        DPIValue = 1 + ((FitScale - 0.40) / 0.60) * 4
-    else
-        DPIValue = 5 + ((FitScale - 1.00) / 0.50) * 5
-    end
-
-    -- Never allow the automatic system to go outside 1-10.
-    DPIValue = math.clamp(DPIValue, 1, 10)
-
+function Library:CalculateAutoDPIScale(Rounding: number?): number
+    local Value = 5
     if Rounding ~= nil then
         local Multiplier = 10 ^ math.max(math.floor(Rounding), 0)
-        DPIValue = math.floor(DPIValue * Multiplier + 0.5) / Multiplier
+        Value = math.floor(Value * Multiplier + 0.5) / Multiplier
     end
-
-    return DPIValue
+    return Value
 end
 
 function Library:SetDPIScale(DPIScale: number)
-
     DPIScale = math.clamp(tonumber(DPIScale) or 5, 1, 10)
+    Library.UIScaleValue = DPIScale
 
-    -- Same piecewise curve as CalculateAutoDPIScale:
-    -- DPI 1..5   maps to 0.40..1.00
-    -- DPI 5..10  maps to 1.00..1.50
-    local ScaleFactor
-    if DPIScale <= 5 then
-        ScaleFactor = 0.40 + ((DPIScale - 1) / 4) * 0.60
-    else
-        ScaleFactor = 1.00 + ((DPIScale - 5) / 5) * 0.50
-    end
+    -- Always recalculate BaseScale from the current viewport
+    Library.BaseScale = Library:CalculateAutoBaseScale()
 
-    -- Store both the actual DPI and the resulting UIScale.
+    local Multiplier = DPIScale / 5
+    local ScaleFactor = Library.BaseScale * Multiplier
+
     Library.DPIValue = DPIScale
     Library.DPIScale = ScaleFactor
 
@@ -8505,15 +8450,22 @@ function Library:CreateWindow(WindowInfo)
         Library.CenterMainWindow = WindowInfo.Center and true or false
 
         do
-            local DPIValue
             if ExplicitDPIScale ~= nil then
-                DPIValue = tonumber(ExplicitDPIScale) or 5
                 Library.AutoDPIScale = false
+                Library.BaseScale = 1
+                Library:SetDPIScale(ExplicitDPIScale)
             else
-                DPIValue = Library:CalculateAutoDPIScale(2, BaseWindowSize)
                 Library.AutoDPIScale = true
+                Library.BaseScale = Library:CalculateAutoBaseScale()
+                Library:SetDPIScale(5)
+                -- Recalculate after Roblox has laid out the frame (deferred)
+                task.defer(function()
+                    if Library.AutoDPIScale then
+                        Library.BaseScale = Library:CalculateAutoBaseScale()
+                        Library:SetDPIScale(Library.UIScaleValue or 5)
+                    end
+                end)
             end
-            Library:SetDPIScale(DPIValue)
         end
 
         if not Library.AutoDPIScaleConnection then
@@ -8522,14 +8474,8 @@ function Library:CreateWindow(WindowInfo)
                 if not Library.AutoDPIScale then
                     return
                 end
-
-                local NewDPI = Library:CalculateAutoDPIScale(2, BaseWindowSize)
-
-                if math.abs((Library.DPIValue or 5) - NewDPI) < 0.01 then
-                    return
-                end
-
-                Library:SetDPIScale(NewDPI)
+                Library.BaseScale = Library:CalculateAutoBaseScale()
+                Library:SetDPIScale(Library.UIScaleValue or 5)
             end
 
             local function BindCamera(Cam: Camera?)
