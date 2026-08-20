@@ -306,6 +306,8 @@ local Library = {
 
     OriginalMinSize = Vector2.new(480, 360),
     MinSize = Vector2.new(480, 360),
+    BaseScale = 1,
+    UIScaleValue = 5,
     DPIScale = 1,
     CornerRadius = 6,
     CornerRadiusDropdown = false,
@@ -1051,49 +1053,51 @@ function Library:UpdateColorsUsingRegistry()
     end
 end
 
-function Library:CalculateAutoDPIScale(Rounding: number?): number
+function Library:CalculateAutoBaseScale(): number
     local Camera = workspace.CurrentCamera
     local ViewportSize: Vector2 = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
-
-    local DPIValue
-
     if RunService:IsStudio() and ViewportSize.X <= 5 and ViewportSize.Y <= 5 then
-        DPIValue = 5
-    else
-        local ShortSide = math.min(ViewportSize.X, ViewportSize.Y)
-        local LongSide = math.max(ViewportSize.X, ViewportSize.Y)
-
-        local MinShortSide, MinDPI = 360, 2.2
-        local MaxShortSide, MaxDPI = 1080, 5
-
-        local Alpha = math.clamp((ShortSide - MinShortSide) / (MaxShortSide - MinShortSide), 0, 1)
-        DPIValue = MinDPI + (MaxDPI - MinDPI) * Alpha
-
-        if LongSide > 0 then
-            local AspectBonus = math.clamp((LongSide / ShortSide - 1.6) * 0.4, 0, 0.6)
-            DPIValue = math.min(DPIValue + AspectBonus, MaxDPI)
-        end
-
-        DPIValue = math.clamp(DPIValue, 1, 10)
+        return 1
     end
 
+    local WinWidth = (Library.MainFrame and Library.MainFrame.Size.X.Offset) or 720
+    local WinHeight = (Library.MainFrame and Library.MainFrame.Size.Y.Offset) or 600
+
+    local MarginX = 36
+    local MarginY = 36
+    local AvailableX = math.max(100, ViewportSize.X - MarginX)
+    local AvailableY = math.max(100, ViewportSize.Y - MarginY)
+
+    local ScaleX = AvailableX / WinWidth
+    local ScaleY = AvailableY / WinHeight
+    local FitScale = math.min(ScaleX, ScaleY)
+
+    return math.clamp(FitScale, 0.25, 1)
+end
+
+function Library:CalculateAutoDPIScale(Rounding: number?): number
+    local Value = 5
     if Rounding ~= nil then
         local Multiplier = 10 ^ math.max(math.floor(Rounding), 0)
-        DPIValue = math.floor(DPIValue * Multiplier + 0.5) / Multiplier
+        Value = math.floor(Value * Multiplier + 0.5) / Multiplier
     end
-
-    return DPIValue
+    return Value
 end
 
 function Library:SetDPIScale(DPIScale: number)
-
     DPIScale = math.clamp(tonumber(DPIScale) or 5, 1, 10)
-    local ScaleFactor = 0.5 + (DPIScale * 0.1)
+    Library.UIScaleValue = DPIScale
+
+    -- Always recalculate BaseScale from the current viewport
+    Library.BaseScale = Library:CalculateAutoBaseScale()
+
+    local Multiplier = DPIScale / 5
+    local ScaleFactor = Library.BaseScale * Multiplier
 
     Library.DPIScale = ScaleFactor
     Library.MinSize = Library.OriginalMinSize * ScaleFactor
 
-	for _, UIScale in Library.Scales do
+    for _, UIScale in Library.Scales do
         UIScale.Scale = ScaleFactor - (tonumber(Library.ScalesOffset[UIScale]) or 0)
     end
 
@@ -1489,6 +1493,61 @@ function Library:NewTrackedScale(Parent: Instance, Offset: number?)
     return Scale
 end
 
+--[[
+    Shared positioning helper for any floating overlay that carries a tracked UIScale
+    (context menus, the search overlay, tooltips, etc).
+
+    Every one of these overlays is parented straight to ScreenGui and scaled with its own
+    UIScale instance. That means Position given in offset pixels gets multiplied by
+    the UIScale's Scale factor before it becomes real screen pixels. Code that reads
+    AbsolutePosition/AbsoluteSize (already real screen pixels) and writes that straight
+    into Position without dividing by the same ScaleFactor drifts more and more as
+    DPIScale moves away from 1 - that's the root cause of context menus and the search
+    overlay landing in the wrong spot at small UI scales.
+
+    This helper ONLY sets Position. It does NOT touch Size, because some overlays use
+    AutomaticSize (e.g. List==1 context menus) and forcibly writing Size conflicts with
+    that. Each call site is responsible for setting its own Size beforehand.
+
+    AnchorPos/AnchorSize and OverlaySize must be given in real screen pixels (straight
+    from AbsolutePosition/AbsoluteSize or a viewport size).
+
+    Offset  = { X, Y } pixel offset from the anchor's top-left, in real screen pixels
+    FlipUp  = if true, prefer opening above the anchor when there's no room below
+              (used by context menus; the search overlay always opens below)
+]]
+function Library:PositionScaledOverlay(Overlay: GuiObject, AnchorPos: Vector2, AnchorSize: Vector2, OverlaySize: Vector2, Offset: { number }?, FlipUp: boolean?)
+    local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
+    local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+
+    local OffsetX = Offset and Offset[1] or 0
+    local OffsetY = Offset and Offset[2] or 0
+
+    local TargetX = AnchorPos.X + OffsetX
+    local TargetY = AnchorPos.Y + OffsetY
+
+    -- Flip horizontally if it would overflow the right edge
+    if TargetX + OverlaySize.X > Viewport.X - 8 then
+        TargetX = AnchorPos.X - OverlaySize.X - 2
+    end
+
+    -- Flip vertically if it would overflow the bottom edge (or above the anchor for menus)
+    if TargetY + OverlaySize.Y > Viewport.Y - 8 then
+        if FlipUp then
+            TargetY = AnchorPos.Y - OverlaySize.Y - 2
+        else
+            TargetY = AnchorPos.Y + AnchorSize.Y - OverlaySize.Y
+        end
+    end
+
+    -- Clamp fully on-screen (real pixels)
+    TargetX = math.clamp(TargetX, 4, math.max(4, Viewport.X - OverlaySize.X - 4))
+    TargetY = math.clamp(TargetY, 4, math.max(4, Viewport.Y - OverlaySize.Y - 4))
+
+    -- Convert real pixels -> the overlay's local offset-space by undoing its own UIScale
+    Overlay.Position = UDim2.fromOffset(TargetX / ScaleFactor, TargetY / ScaleFactor)
+end
+
 local function SafeParentUI(UI: Instance, Parent: Instance | () -> Instance)
     local success, _error = pcall(function()
         if not Parent then
@@ -1613,6 +1672,7 @@ do
         BackgroundTransparency = 1,
         Position = UDim2.new(1, -6, 0, 6),
         Size = UDim2.new(0, 300, 1, -6),
+        ZIndex = 1000000,
         Parent = ScreenGui,
     })
     table.insert(
@@ -1890,21 +1950,6 @@ function Library:MakeResizable(UI: GuiObject, DragFrame: GuiObject, Callback: ()
     end))
 end
 
-function Library:MakeCover(Holder: GuiObject, Place: string)
-    local Pos = Places[Place] or { 0, 0 }
-    local Size = Sizes[Place] or { 1, 0.5 }
-
-    local Cover = New("Frame", {
-        AnchorPoint = Vector2.new(Pos[1], Pos[2]),
-        BackgroundColor3 = Holder.BackgroundColor3,
-        Position = UDim2.fromScale(Pos[1], Pos[2]),
-        Size = UDim2.fromScale(Size[1], Size[2]),
-        Parent = Holder,
-    })
-
-    return Cover
-end
-
 function Library:MakeLine(Frame: GuiObject, Info)
     local Line = New("Frame", {
         AnchorPoint = Info.AnchorPoint or Vector2.zero,
@@ -1936,14 +1981,6 @@ function Library:AddOutline(Frame: GuiObject)
     return OutlineStroke, ShadowStroke
 end
 
-function Library:AddBlank(Frame: GuiObject, Size: UDim2)
-    return New("Frame", {
-        BackgroundTransparency = 1,
-        Size = Size or UDim2.fromScale(0, 0),
-        Parent = Frame,
-    })
-end
-
 
 
 function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [any]: any })
@@ -1959,6 +1996,9 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
             if Root then
                 Root.Visible = Visible
+                if Visible and typeof(Root) == "Instance" and Root:IsA("GuiObject") then
+                    Library:BringOverlayToFront(Root)
+                end
             end
         end
     end
@@ -1974,7 +2014,7 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         function Table:Remove()
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
             if Root then
-                Root:Destroy()
+                Root.Visible = false
             end
         end
     end
@@ -2015,6 +2055,10 @@ function Library:SetOverlayVisible(Id: number, Visible: boolean)
     local Overlay = Library.Overlays[Id]
     if Overlay then
         Overlay:SetVisible(Visible)
+        local Root = Overlay.Holder or Overlay.Label or Overlay.Button or Overlay.Menu
+        if Visible and Root and typeof(Root) == "Instance" and Root:IsA("GuiObject") then
+            Library:BringOverlayToFront(Root)
+        end
     end
     return Overlay
 end
@@ -2022,7 +2066,12 @@ end
 function Library:ToggleOverlay(Id: number)
     local Overlay = Library.Overlays[Id]
     if Overlay then
-        Overlay:SetVisible(not Overlay:IsVisible())
+        local NewVisible = not Overlay:IsVisible()
+        Overlay:SetVisible(NewVisible)
+        local Root = Overlay.Holder or Overlay.Label or Overlay.Button or Overlay.Menu
+        if NewVisible and Root and typeof(Root) == "Instance" and Root:IsA("GuiObject") then
+            Library:BringOverlayToFront(Root)
+        end
     end
     return Overlay
 end
@@ -2505,16 +2554,12 @@ function Library:AddDraggableMenu(Name: string)
     })
 
     local Container = New("Frame", {
-        AutomaticSize = Enum.AutomaticSize.XY,
+        AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(0, 0),
+        Size = UDim2.new(1, 0, 0, 0),
         LayoutOrder = 2,
         ZIndex = 1,
         Parent = Holder,
-    })
-    New("UISizeConstraint", {
-        MinSize = Vector2.new(ResolvedWidth, 0),
-        Parent = Container,
     })
     New("UIListLayout", {
         Padding = UDim.new(0, 7),
@@ -2530,13 +2575,40 @@ function Library:AddDraggableMenu(Name: string)
     })
 
     local function UpdateHolderWidth()
-        local ContentWidth = (Container.Visible and Container.AbsoluteSize.X or 0)
-        local TargetWidth = math.max(ResolvedWidth, math.ceil(ContentWidth))
+        local MaxRequiredWidth = ResolvedWidth
+        for _, Child in Container:GetChildren() do
+            if Child:IsA("GuiObject") and Child.Visible then
+                local CalcWidth = Child:GetAttribute("CalculatedWidth")
+                if not CalcWidth or CalcWidth <= 0 then
+                    CalcWidth = Child.AbsoluteSize.X
+                end
+                if CalcWidth and (CalcWidth + 24) > MaxRequiredWidth then
+                    MaxRequiredWidth = CalcWidth + 24
+                end
+            end
+        end
+        local TargetWidth = math.max(ResolvedWidth, math.ceil(MaxRequiredWidth))
         if Holder.Size.X.Offset ~= TargetWidth then
             Holder.Size = UDim2.fromOffset(TargetWidth, 0)
         end
     end
     Container:GetPropertyChangedSignal("AbsoluteSize"):Connect(UpdateHolderWidth)
+    Container.ChildAdded:Connect(function(Child)
+        if Child:IsA("GuiObject") then
+            Child:GetPropertyChangedSignal("AbsoluteSize"):Connect(UpdateHolderWidth)
+            Child:GetPropertyChangedSignal("Visible"):Connect(UpdateHolderWidth)
+            task.defer(UpdateHolderWidth)
+        end
+    end)
+    Container.ChildRemoved:Connect(function()
+        task.defer(UpdateHolderWidth)
+    end)
+    for _, Child in Container:GetChildren() do
+        if Child:IsA("GuiObject") then
+            Child:GetPropertyChangedSignal("AbsoluteSize"):Connect(UpdateHolderWidth)
+            Child:GetPropertyChangedSignal("Visible"):Connect(UpdateHolderWidth)
+        end
+    end
 
     local MenuCollapsed = false
     local function SetMenuCollapsed(Collapsed: boolean)
@@ -2571,10 +2643,18 @@ function Library:AddDraggableMenu(Name: string)
         SetMenuCollapsed(not MenuCollapsed)
     end
     function ContainerObj:Remove()
-        Holder:Destroy()
+        if Holder == Library.KeybindFrame then
+            Holder.Visible = false
+        else
+            Holder.Visible = false
+            pcall(function() Holder:Destroy() end)
+        end
     end
     function ContainerObj:SetVisible(Visible: boolean)
         Holder.Visible = Visible
+        if Visible then
+            Library:BringOverlayToFront(Holder)
+        end
     end
     function ContainerObj:IsVisible(): boolean
         return Holder.Visible
@@ -2584,6 +2664,53 @@ function Library:AddDraggableMenu(Name: string)
     Library:RegisterOverlay("DraggableMenu", Name, ContainerObj)
 
     return Holder, Container, ContainerObj
+end
+
+function Library:AddLongPress(GuiObject: GuiObject, Callback: () -> (), HoldDuration: number?)
+    local Duration = HoldDuration or 0.45
+    local StartPos = nil
+    local PressThread = nil
+
+    local function Cancel()
+        if PressThread then
+            task.cancel(PressThread)
+            PressThread = nil
+        end
+        StartPos = nil
+    end
+
+    local BeganConn = GuiObject.InputBegan:Connect(function(Input: InputObject)
+        if Input.UserInputType == Enum.UserInputType.Touch then
+            Cancel()
+            StartPos = Input.Position
+            PressThread = task.delay(Duration, function()
+                PressThread = nil
+                Library:SafeCallback(Callback)
+            end)
+        end
+    end)
+
+    local ChangedConn = GuiObject.InputChanged:Connect(function(Input: InputObject)
+        if Input.UserInputType == Enum.UserInputType.Touch and PressThread and StartPos then
+            local Delta = (Input.Position - StartPos).Magnitude
+            if Delta > 12 then
+                Cancel()
+            end
+        end
+    end)
+
+    local EndedConn = GuiObject.InputEnded:Connect(function(Input: InputObject)
+        if Input.UserInputType == Enum.UserInputType.Touch then
+            Cancel()
+        end
+    end)
+
+    return function()
+        Cancel()
+        BeganConn:Disconnect()
+        ChangedConn:Disconnect()
+        EndedConn:Disconnect()
+    end
 end
 
 local CurrentMenu
@@ -2650,6 +2777,7 @@ function Library:AddContextMenu(
         List = nil,
         Signal = nil,
         LastOpenTick = 0,
+        LongPressCleanup = nil,
 
         Size = Size,
     }
@@ -2658,6 +2786,35 @@ function Library:AddContextMenu(
         Table.List = New("UIListLayout", {
             Parent = Menu,
         })
+    end
+
+    local function UpdateMenuPosition()
+        if not Menu or not Menu.Visible or not Holder or not Holder.Parent then
+            return
+        end
+
+        local RawOffset = typeof(Offset) == "function" and Offset() or Offset
+
+        local HolderPos = Holder.AbsolutePosition
+        local HolderSize = Holder.AbsoluteSize
+
+        -- Menu's own AbsoluteSize is already real screen pixels (post UIScale), so it's
+        -- a reliable width/height to anchor against once it's had at least one frame to
+        -- resolve. Fall back to the configured Size (scaled) if it hasn't rendered yet.
+        local MenuWidth = Menu.AbsoluteSize.X
+        local MenuHeight = Menu.AbsoluteSize.Y
+        if MenuWidth <= 0 or MenuHeight <= 0 then
+            local ResolvedSize = typeof(Table.Size) == "function" and Table.Size() or Table.Size
+            local ScaleFactor = Library.DPIScale or 1
+            if MenuWidth <= 0 then
+                MenuWidth = (ResolvedSize and ResolvedSize.X.Offset > 0 and ResolvedSize.X.Offset or 100) * ScaleFactor
+            end
+            if MenuHeight <= 0 then
+                MenuHeight = (ResolvedSize and ResolvedSize.Y.Offset > 0 and ResolvedSize.Y.Offset or 80) * ScaleFactor
+            end
+        end
+
+        Library:PositionScaledOverlay(Menu, HolderPos, HolderSize, Vector2.new(MenuWidth, MenuHeight), RawOffset, true)
     end
 
     function Table:Open()
@@ -2670,43 +2827,27 @@ function Library:AddContextMenu(
         CurrentMenu = Table
         Table.Active = true
         Table.LastOpenTick = os.clock()
-        Menu.ZIndex = Library:GetNextOverlayZIndex() + 5000
 
-        if typeof(Offset) == "function" then
-            Menu.Position = UDim2.fromOffset(
-                math.floor(Holder.AbsolutePosition.X + Offset()[1]),
-                math.floor(Holder.AbsolutePosition.Y + Offset()[2])
-            )
-        else
-            Menu.Position = UDim2.fromOffset(
-                math.floor(Holder.AbsolutePosition.X + Offset[1]),
-                math.floor(Holder.AbsolutePosition.Y + Offset[2])
-            )
+        if not Menu.Parent or Menu.Parent ~= ParentGui then
+            Menu.Parent = ParentGui
         end
+
+        Menu.ZIndex = Library:GetNextOverlayZIndex() + 5000
         Menu.Size = typeof(Table.Size) == "function" and Table.Size() or Table.Size
+
         if typeof(ActiveCallback) == "function" then
             Library:SafeCallback(ActiveCallback, true)
         end
 
         Menu.Visible = true
+        UpdateMenuPosition()
+        task.defer(UpdateMenuPosition)
 
         if Table.Signal then
             Table.Signal:Disconnect()
             Table.Signal = nil
         end
-        Table.Signal = Holder:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
-            if typeof(Offset) == "function" then
-                Menu.Position = UDim2.fromOffset(
-                    math.floor(Holder.AbsolutePosition.X + Offset()[1]),
-                    math.floor(Holder.AbsolutePosition.Y + Offset()[2])
-                )
-            else
-                Menu.Position = UDim2.fromOffset(
-                    math.floor(Holder.AbsolutePosition.X + Offset[1]),
-                    math.floor(Holder.AbsolutePosition.Y + Offset[2])
-                )
-            end
-        end)
+        Table.Signal = Holder:GetPropertyChangedSignal("AbsolutePosition"):Connect(UpdateMenuPosition)
     end
 
     function Table:Close()
@@ -2755,7 +2896,17 @@ function Library:AddContextMenu(
         if CurrentMenu == Table then
             Table:Close()
         end
-        Menu:Destroy()
+        Menu.Visible = false
+        if Table.LongPressCleanup then
+            Table.LongPressCleanup()
+            Table.LongPressCleanup = nil
+        end
+    end
+
+    if Holder and typeof(Holder) == "Instance" and Holder:IsA("GuiObject") then
+        Table.LongPressCleanup = Library:AddLongPress(Holder, function()
+            Table:Toggle()
+        end)
     end
 
     Library:RegisterOverlay("ContextMenu", nil, Table)
@@ -2788,7 +2939,6 @@ Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input: InputObje
 end))
 
 local TooltipLabel = New("TextLabel", {
-    AutomaticSize = Enum.AutomaticSize.Y,
     BackgroundColor3 = "BackgroundColor",
     TextColor3 = "FontColor",
     FontFace = function()
@@ -2853,7 +3003,7 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
             ParentGui = ScreenGui
         end
         TooltipLabel.Parent = ParentGui
-        TooltipLabel.ZIndex = Library:GetNextOverlayZIndex()
+        TooltipLabel.ZIndex = Library:GetNextOverlayZIndex() + 10000
 
         local Text = TooltipTable.Disabled and DisabledInfoStr or InfoStr
         TooltipLabel.Text = Text
@@ -2861,13 +3011,15 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
         local Scale = math.max(0.1, Library.DPIScale or 1)
         local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
         local MaxWrapWidth = math.clamp((Viewport.X - 32) / Scale, 120, 320)
-        local TextWidth, _ = Library:GetTextBounds(
+        local TextWidth, TextHeight = Library:GetTextBounds(
             Text,
             Library.Scheme.Font,
             TooltipLabel.TextSize,
             MaxWrapWidth
         )
-        TooltipLabel.Size = UDim2.fromOffset(math.ceil(TextWidth) + 16, 0)
+        local TooltipWidth = math.ceil(TextWidth) + 16
+        local TooltipHeight = math.ceil(TextHeight) + 10
+        TooltipLabel.Size = UDim2.fromOffset(TooltipWidth, TooltipHeight)
 
         local MousePos = UserInputService:GetMouseLocation()
         TooltipLabel.Position = UDim2.fromOffset(
@@ -2887,21 +3039,18 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
             local OffsetX = (Library.ShowCustomCursor and 12 or 16)
             local OffsetY = (Library.ShowCustomCursor and 12 or 16)
 
-            local AbsWidth = TooltipLabel.AbsoluteSize.X
-            local AbsHeight = TooltipLabel.AbsoluteSize.Y
-
             local TargetX = CurrentMousePos.X + OffsetX
             local TargetY = CurrentMousePos.Y + OffsetY
 
-            if TargetX + AbsWidth > CurrentViewport.X - 8 then
-                TargetX = CurrentMousePos.X - AbsWidth - 8
+            if TargetX + TooltipWidth > CurrentViewport.X - 8 then
+                TargetX = CurrentMousePos.X - TooltipWidth - 8
             end
-            if TargetY + AbsHeight > CurrentViewport.Y - 8 then
-                TargetY = CurrentMousePos.Y - AbsHeight - 8
+            if TargetY + TooltipHeight > CurrentViewport.Y - 8 then
+                TargetY = CurrentMousePos.Y - TooltipHeight - 8
             end
 
-            TargetX = math.clamp(TargetX, 4, math.max(4, CurrentViewport.X - AbsWidth - 4))
-            TargetY = math.clamp(TargetY, 4, math.max(4, CurrentViewport.Y - AbsHeight - 4))
+            TargetX = math.clamp(TargetX, 4, math.max(4, CurrentViewport.X - TooltipWidth - 4))
+            TargetY = math.clamp(TargetY, 4, math.max(4, CurrentViewport.Y - TooltipHeight - 4))
 
             TooltipLabel.Position = UDim2.fromOffset(TargetX, TargetY)
 
@@ -3234,7 +3383,7 @@ do
         local KeybindsToggle = { Normal = KeyPicker.Mode ~= "Toggle" }
         do
             local Holder = New("TextButton", {
-                AutomaticSize = Enum.AutomaticSize.X,
+                AutomaticSize = Enum.AutomaticSize.XY,
                 BackgroundTransparency = 1,
                 Size = UDim2.fromOffset(0, 18),
                 Text = "",
@@ -3245,29 +3394,18 @@ do
                 MinSize = Vector2.new(164, 0),
                 Parent = Holder,
             })
-
-            local Label = New("TextLabel", {
-                AutomaticSize = Enum.AutomaticSize.X,
-                BackgroundTransparency = 1,
-                Position = UDim2.fromOffset(0, 0),
-                Size = UDim2.fromOffset(0, 18),
-                Text = "",
-                TextSize = 14,
-                TextTransparency = 0.5,
-                TextXAlignment = Enum.TextXAlignment.Left,
+            New("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal,
+                VerticalAlignment = Enum.VerticalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 6),
                 Parent = Holder,
-            })
-            New("UIPadding", {
-                PaddingRight = UDim.new(0, 8),
-                Parent = Label,
             })
 
             local Checkbox = New("Frame", {
-                AnchorPoint = Vector2.new(0, 0.5),
                 BackgroundColor3 = "MainColor",
-                Position = UDim2.fromScale(0, 0.5),
+                LayoutOrder = 1,
                 Size = UDim2.fromOffset(14, 14),
-                SizeConstraint = Enum.SizeConstraint.RelativeYY,
                 Visible = not KeybindsToggle.Normal,
                 Parent = Holder,
             })
@@ -3295,6 +3433,46 @@ do
             })
             Library:RegisterIconInstance(CheckImage, "check")
 
+            local Label = New("TextLabel", {
+                AutomaticSize = Enum.AutomaticSize.X,
+                BackgroundTransparency = 1,
+                FontFace = function()
+                    return Library.Scheme.Font
+                end,
+                TextColor3 = "FontColor",
+                LayoutOrder = 2,
+                Size = UDim2.fromOffset(0, 18),
+                Text = "",
+                TextSize = 14,
+                TextTransparency = 0.5,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = Holder,
+            })
+            New("UIPadding", {
+                PaddingRight = UDim.new(0, 8),
+                Parent = Label,
+            })
+
+            local function RecalculateKeybindWidth()
+                local TextWidth = select(1, Library:GetTextBounds(Label.Text, Library.Scheme.Font, 14))
+                local CheckboxW = (not KeybindsToggle.Normal and 20 or 0)
+                local RowWidth = CheckboxW + math.ceil(TextWidth) + 16
+                Holder:SetAttribute("CalculatedWidth", RowWidth)
+
+                if Library.KeybindFrame and Library.KeybindContainer then
+                    local MaxW = 220
+                    for _, Child in Library.KeybindContainer:GetChildren() do
+                        if Child:IsA("GuiObject") and Child.Visible then
+                            local CW = Child:GetAttribute("CalculatedWidth") or Child.AbsoluteSize.X
+                            if CW and (CW + 24) > MaxW then
+                                MaxW = CW + 24
+                            end
+                        end
+                    end
+                    Library.KeybindFrame.Size = UDim2.fromOffset(math.ceil(MaxW), 0)
+                end
+            end
+
             function KeybindsToggle:Display(State)
                 Label.TextTransparency = State and 0 or 0.5
                 CheckImage.ImageTransparency = State and 0 or 1
@@ -3302,18 +3480,20 @@ do
 
             function KeybindsToggle:SetText(Text)
                 Label.Text = Text
+                RecalculateKeybindWidth()
             end
 
             function KeybindsToggle:SetVisibility(Visibility)
                 Holder.Visible = Visibility
+                RecalculateKeybindWidth()
             end
 
             function KeybindsToggle:SetNormal(Normal)
                 KeybindsToggle.Normal = Normal
 
                 Holder.Active = not Normal
-                Label.Position = Normal and UDim2.fromOffset(0, 0) or UDim2.fromOffset(20, 0)
                 Checkbox.Visible = not Normal
+                RecalculateKeybindWidth()
             end
 
             KeyPicker.DoClick = function(...) end
@@ -8089,6 +8269,7 @@ function Library:Notify(...)
         BackgroundTransparency = 1,
         Size = UDim2.fromScale(1, 0),
         Visible = false,
+        ZIndex = 1000000,
         Parent = NotificationArea,
     })
 
@@ -8097,7 +8278,7 @@ function Library:Notify(...)
         BackgroundColor3 = "MainColor",
         Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -8, 0, -2) or UDim2.new(1, 8, 0, -2),
         Size = UDim2.fromScale(1, 1),
-        ZIndex = 5,
+        ZIndex = 1000000,
         Parent = FakeBackground,
     })
     table.insert(
@@ -8414,16 +8595,11 @@ function Library:CreateWindow(WindowInfo)
         until ViewportSize.X > 5 and ViewportSize.Y > 5
     end
 
-    local MaxX = ViewportSize.X - 64
-    local MaxY = ViewportSize.Y - 64
-
-    Library.OriginalMinSize =
-        Vector2.new(math.min(Library.OriginalMinSize.X, MaxX), math.min(Library.OriginalMinSize.Y, MaxY))
     Library.MinSize = Library.OriginalMinSize
 
     WindowInfo.Size = UDim2.fromOffset(
-        math.clamp(WindowInfo.Size.X.Offset, Library.MinSize.X, MaxX),
-        math.clamp(WindowInfo.Size.Y.Offset, Library.MinSize.Y, MaxY)
+        math.max(WindowInfo.Size.X.Offset, Library.MinSize.X),
+        math.max(WindowInfo.Size.Y.Offset, Library.MinSize.Y)
     )
     if typeof(WindowInfo.Font) == "EnumItem" then
         WindowInfo.Font = Font.fromEnum(WindowInfo.Font)
@@ -8507,15 +8683,22 @@ function Library:CreateWindow(WindowInfo)
         Library.CenterMainWindow = WindowInfo.Center and true or false
 
         do
-            local DPIValue
             if ExplicitDPIScale ~= nil then
-                DPIValue = tonumber(ExplicitDPIScale) or 5
                 Library.AutoDPIScale = false
+                Library.BaseScale = 1
+                Library:SetDPIScale(ExplicitDPIScale)
             else
-                DPIValue = Library:CalculateAutoDPIScale()
                 Library.AutoDPIScale = true
+                Library.BaseScale = Library:CalculateAutoBaseScale()
+                Library:SetDPIScale(5)
+                -- Recalculate after Roblox has laid out the frame (deferred)
+                task.defer(function()
+                    if Library.AutoDPIScale then
+                        Library.BaseScale = Library:CalculateAutoBaseScale()
+                        Library:SetDPIScale(Library.UIScaleValue or 5)
+                    end
+                end)
             end
-            Library:SetDPIScale(DPIValue)
         end
 
         if not Library.AutoDPIScaleConnection then
@@ -8524,7 +8707,8 @@ function Library:CreateWindow(WindowInfo)
                 if not Library.AutoDPIScale then
                     return
                 end
-                Library:SetDPIScale(Library:CalculateAutoDPIScale())
+                Library.BaseScale = Library:CalculateAutoBaseScale()
+                Library:SetDPIScale(Library.UIScaleValue or 5)
             end
 
             local function BindCamera(Cam: Camera?)
@@ -11859,6 +12043,10 @@ function Library:CreateWindow(WindowInfo)
             local Padding = WindowInfo.BubblePadding
             local StartSide = (WindowInfo.BubbleSide == "Left") and "Left" or "Right"
 
+            local CurrentScale = Library.DPIScale or 1
+            local InitialX = (StartSide == "Right") and math.floor(-Margin - (Width * CurrentScale)) or Margin
+            local InitialY = math.floor(-Height * CurrentScale / 2)
+
             local Bubble = New("TextButton", {
                 AutoButtonColor = false,
                 BackgroundColor3 = WindowInfo.BubbleColor or "MainColor",
@@ -11867,8 +12055,9 @@ function Library:CreateWindow(WindowInfo)
                 Size = BubbleSizeInfo,
                 Position = UDim2.new(
                     StartSide == "Right" and 1 or 0,
-                    StartSide == "Right" and -(Margin + Width) or Margin,
-                    0.5, -Height / 2
+                    InitialX,
+                    0.5,
+                    InitialY
                 ),
                 ZIndex = 500,
                 Parent = ScreenGui,
@@ -11882,8 +12071,13 @@ function Library:CreateWindow(WindowInfo)
                     Parent = Bubble,
                 })
             )
-            table.insert(Library.Scales, New("UIScale", { Parent = Bubble }))
+            Library:NewTrackedScale(Bubble)
             Library:AddOutline(Bubble)
+
+            local function GetBubbleScale()
+                local ScaleObj = Bubble:FindFirstChildOfClass("UIScale")
+                return (ScaleObj and ScaleObj.Scale) or Library.DPIScale or 1
+            end
 
             local IconSize = UDim2.fromOffset(
                 math.max(Width - Padding * 2, 4),
@@ -11924,12 +12118,16 @@ function Library:CreateWindow(WindowInfo)
 
             local function SnapToSide(ToSide: string)
                 local ScreenSize = ScreenGui.AbsoluteSize
+                local BubbleScale = GetBubbleScale()
+                local ScaledW = Width * BubbleScale
+                local ScaledH = Height * BubbleScale
+
                 local ClampedY =
-                    math.clamp(Bubble.AbsolutePosition.Y, Margin, math.max(Margin, ScreenSize.Y - Height - Margin))
+                    math.clamp(Bubble.AbsolutePosition.Y, Margin, math.max(Margin, ScreenSize.Y - ScaledH - Margin))
 
                 local TargetPos
                 if ToSide == "Right" then
-                    TargetPos = UDim2.new(1, -(Margin + Width), 0, ClampedY)
+                    TargetPos = UDim2.new(1, math.floor(-Margin - ScaledW), 0, ClampedY)
                 else
                     TargetPos = UDim2.new(0, Margin, 0, ClampedY)
                 end
@@ -11965,7 +12163,8 @@ function Library:CreateWindow(WindowInfo)
 
                     if Moved then
                         local ScreenSize = ScreenGui.AbsoluteSize
-                        local CenterX = Bubble.AbsolutePosition.X + (Width / 2)
+                        local BubbleScale = GetBubbleScale()
+                        local CenterX = Bubble.AbsolutePosition.X + ((Width * BubbleScale) / 2)
                         SnapToSide(CenterX < (ScreenSize.X / 2) and "Left" or "Right")
                     else
                         Library:Toggle()
@@ -11997,6 +12196,21 @@ function Library:CreateWindow(WindowInfo)
                     )
                 end
             end))
+
+            Library:GiveDPIScaleCallback(function(NewScaleFactor)
+                if not (Bubble and Bubble.Parent) or Dragging then
+                    return
+                end
+                local ScreenSize = ScreenGui.AbsoluteSize
+                local ScaledH = Height * NewScaleFactor
+                local ClampedY = math.clamp(Bubble.AbsolutePosition.Y, Margin, math.max(Margin, ScreenSize.Y - ScaledH - Margin))
+                if Bubble.Position.X.Scale >= 0.5 then
+                    local ScaledW = Width * NewScaleFactor
+                    Bubble.Position = UDim2.new(1, math.floor(-Margin - ScaledW), 0, ClampedY)
+                else
+                    Bubble.Position = UDim2.new(0, Margin, 0, ClampedY)
+                end
+            end)
 
             Library.Bubble = Bubble
             return Bubble
@@ -12425,18 +12639,31 @@ function Library:CreateWindow(WindowInfo)
         CloseOverlay = CloseOverlayImpl
 
         local function RepositionOverlay()
-
-            local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
-
             local AbsPos  = SearchBox.AbsolutePosition
             local AbsSize = SearchBox.AbsoluteSize
 
+            -- All of this is in real screen pixels, matching AbsPos/AbsSize.
             local Viewport   = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-            local MaxHeight  = math.max(Viewport.Y - (AbsPos.Y + AbsSize.Y + 4) - 12, 80)
+            local GapBelow   = 4
+            local MaxHeight  = math.max(Viewport.Y - (AbsPos.Y + AbsSize.Y + GapBelow) - 12, 80)
             local WantHeight = math.min(400, MaxHeight)
+            local WantWidth  = AbsSize.X + 3
 
-            SearchOverlay.Size     = UDim2.fromOffset((AbsSize.X + 3) / ScaleFactor, WantHeight / ScaleFactor)
-            SearchOverlay.Position = UDim2.fromOffset(AbsPos.X, AbsPos.Y + AbsSize.Y + 4)
+            -- Set size explicitly (search overlay doesn't use AutomaticSize)
+            local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
+            SearchOverlay.Size = UDim2.fromOffset(WantWidth / ScaleFactor, WantHeight / ScaleFactor)
+
+            -- Anchor directly below the search box; never flip above it. WantHeight is
+            -- already clamped to fit the remaining space, so the overlay never needs to
+            -- push back upward - pass a zero-height anchor so that logic can't fire.
+            Library:PositionScaledOverlay(
+                SearchOverlay,
+                Vector2.new(AbsPos.X, AbsPos.Y + AbsSize.Y),
+                Vector2.new(AbsSize.X, 0),
+                Vector2.new(WantWidth, WantHeight),
+                { 0, GapBelow },
+                false
+            )
         end
 
         Library:GiveDPIScaleCallback(function()
