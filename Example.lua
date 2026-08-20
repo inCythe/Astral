@@ -1551,7 +1551,7 @@ local ListMenu = Library:AddContextMenu(
     { 0, 6 },
     1 -- List = 1: auto-sizing vertical list
 )
-ListMenu.ListLayout.Padding = UDim.new(0, 2)
+ListMenu.List.Padding = UDim.new(0, 2)
 
 local function AddListMenuRow(Text, Func)
     local Row = Instance.new("TextButton")
