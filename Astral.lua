@@ -1150,27 +1150,25 @@ function Library:SetDPIScale(DPIScale: number)
         Library:SafeCallback(Callback, ScaleFactor)
     end
 
-    -- Keep the bubble's on-screen position valid after a scale change: its
-    -- Size/Position are logical/BASE space (the UIScale loop above already
-    -- rescaled it), so re-clamp using the same base-space math SnapToSide
-    -- uses, preserving whichever side it's currently snapped to.
+    -- Keep the bubble's on-screen position valid after a scale change.
+    -- UIScale only multiplies AbsoluteSize; it never touches Position, so
+    -- Bubble.Position's offset is already real screen pixels -- same space
+    -- as AbsolutePosition/AbsoluteSize. No scale conversion needed, matching
+    -- SnapToSide.
     if Library.Bubble and Library.Bubble.Parent and ScreenGui then
         local Bubble = Library.Bubble
-        local BaseWidth = Bubble.Size.X.Offset
-        local BaseHeight = Bubble.Size.Y.Offset
+        local RenderedWidth = Bubble.AbsoluteSize.X
+        local RenderedHeight = Bubble.AbsoluteSize.Y
 
         local ScreenSize = ScreenGui.AbsoluteSize
-        local BubbleScaleFactor = math.max(ScaleFactor, 0.001)
-
-        local LogicalY = Bubble.AbsolutePosition.Y / BubbleScaleFactor
-        local LogicalScreenHeight = ScreenSize.Y / BubbleScaleFactor
+        local Y = Bubble.AbsolutePosition.Y
 
         local ClampedY =
-            math.clamp(LogicalY, 0, math.max(0, LogicalScreenHeight - BaseHeight))
+            math.clamp(Y, 0, math.max(0, ScreenSize.Y - RenderedHeight))
 
         local IsRight = Bubble.Position.X.Scale > 0.5
         if IsRight then
-            Bubble.Position = UDim2.new(1, -BaseWidth, 0, ClampedY)
+            Bubble.Position = UDim2.new(1, -RenderedWidth, 0, ClampedY)
         else
             Bubble.Position = UDim2.new(0, 0, 0, ClampedY)
         end
@@ -11794,11 +11792,16 @@ function Library:CreateWindow(WindowInfo)
             local Padding = WindowInfo.BubblePadding
             local StartSide = (WindowInfo.BubbleSide == "Left") and "Left" or "Right"
 
-            -- Bubble carries its own UIScale (below), so Position/Size offsets
-            -- here are logical/BASE space. Bubble.AbsolutePosition and
-            -- ScreenGui.AbsoluteSize, used later for drag-snap clamping, are
-            -- SCREEN space -- any math mixing the two must convert first.
+            -- UIScale only multiplies AbsoluteSize; it never touches
+            -- Position. Descendants of Bubble (icon/label) inherit its
+            -- UIScale automatically, so THEIR sizing must stay in base/
+            -- unscaled units (Width/Height below). But Bubble's own Position
+            -- offset is real screen pixels and must be computed from its
+            -- actual RENDERED (scaled) size, or the initial placement will be
+            -- off except at DPIScale's default (5/Scale=1).
+            local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
             local Width, Height = BaseWidth, BaseHeight
+            local RenderedWidth, RenderedHeight = BaseWidth * ScaleFactor, BaseHeight * ScaleFactor
 
             local Bubble = New("TextButton", {
                 AutoButtonColor = false,
@@ -11808,8 +11811,8 @@ function Library:CreateWindow(WindowInfo)
                 Size = BubbleSizeInfo,
                 Position = UDim2.new(
                     StartSide == "Right" and 1 or 0,
-                    StartSide == "Right" and -Width or 0,
-                    0.5, -Height / 2
+                    StartSide == "Right" and -RenderedWidth or 0,
+                    0.5, -RenderedHeight / 2
                 ),
                 ZIndex = 500,
                 Parent = ScreenGui,
@@ -11879,23 +11882,22 @@ function Library:CreateWindow(WindowInfo)
 
             local function SnapToSide(ToSide: string)
                 local ScreenSize = ScreenGui.AbsoluteSize
-                local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
 
-                -- Bubble.AbsolutePosition/ScreenGui.AbsoluteSize are SCREEN
-                -- space (post-UIScale). Height/Width and the TargetPos we
-                -- tween to are logical/BASE space (pre-UIScale, since
-                -- Bubble.Position is written as base-space offsets). Convert
-                -- the measured Y back to base space before clamping/using it.
+                -- UIScale only multiplies Bubble's AbsoluteSize; it never
+                -- touches Position. So Bubble.Position's offset is already in
+                -- real screen pixels, same space as AbsolutePosition and
+                -- ScreenGui.AbsoluteSize -- no scale conversion needed here.
                 -- The bubble sits flush against the screen edge (no margin).
-                local LogicalY = Bubble.AbsolutePosition.Y / ScaleFactor
-                local LogicalScreenHeight = ScreenSize.Y / ScaleFactor
+                local Y = Bubble.AbsolutePosition.Y
+                local RenderedHeight = Bubble.AbsoluteSize.Y
+                local RenderedWidth = Bubble.AbsoluteSize.X
 
                 local ClampedY =
-                    math.clamp(LogicalY, 0, math.max(0, LogicalScreenHeight - Height))
+                    math.clamp(Y, 0, math.max(0, ScreenSize.Y - RenderedHeight))
 
                 local TargetPos
                 if ToSide == "Right" then
-                    TargetPos = UDim2.new(1, -Width, 0, ClampedY)
+                    TargetPos = UDim2.new(1, -RenderedWidth, 0, ClampedY)
                 else
                     TargetPos = UDim2.new(0, 0, 0, ClampedY)
                 end
@@ -11957,21 +11959,14 @@ function Library:CreateWindow(WindowInfo)
                         Moved = true
                     end
 
-                    -- Input.Position/Delta are real SCREEN-space pixels (mouse
-                    -- movement), but Bubble.Position's offset is BASE/logical
-                    -- space (Roblox divides it by UIScale.Scale at render
-                    -- time). Adding a raw screen-space delta onto a base-space
-                    -- offset makes the bubble drift away from the cursor at
-                    -- any DPI other than 1x. Convert the delta into base
-                    -- space first so 1 screen pixel of mouse movement always
-                    -- maps to 1 rendered pixel of bubble movement.
-                    local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
-                    local BaseDeltaX = Delta.X / ScaleFactor
-                    local BaseDeltaY = Delta.Y / ScaleFactor
-
+                    -- UIScale only multiplies the parent's AbsoluteSize; it
+                    -- never touches Position. So Bubble.Position's offset is
+                    -- already in real screen pixels, same as Input.Position/
+                    -- Delta -- no scale conversion needed here, matching how
+                    -- MakeDraggable moves the main window.
                     Bubble.Position = UDim2.new(
-                        StartPos.X.Scale, StartPos.X.Offset + BaseDeltaX,
-                        StartPos.Y.Scale, StartPos.Y.Offset + BaseDeltaY
+                        StartPos.X.Scale, StartPos.X.Offset + Delta.X,
+                        StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y
                     )
                 end
             end))
