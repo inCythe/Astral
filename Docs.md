@@ -317,7 +317,6 @@ local Window = Library:CreateWindow({
     BubbleSize = UDim2.fromOffset(50, 50),
     BubbleCornerRadius = 25,               -- Half of BubbleSize for a full circle; lower for rounded-square bubbles.
     BubblePadding = 12,                    -- Inset between the bubble edge and its icon/letter.
-    BubbleMargin = 8,                      -- Distance kept from the screen edges when snapped.
 
     -- Mobile
     -- (mobile support -- IsMobile detection, touch-friendly sizing, the Bubble
@@ -383,7 +382,6 @@ local Window = Library:CreateWindow({
     BubbleSize       = UDim2.fromOffset(50, 50),
     BubbleCornerRadius = 25,                      -- half of BubbleSize for a circle
     BubblePadding    = 12,
-    BubbleMargin     = 8,                         -- distance kept from screen edges when snapped
 })
 ```
 

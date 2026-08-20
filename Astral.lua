@@ -422,7 +422,6 @@ local Templates = {
         BubbleSize = UDim2.fromOffset(50, 50),
         BubbleCornerRadius = 25,
         BubblePadding = 12,
-        BubbleMargin = 8,
 
         UnlockMouseWhileOpen = true,
 
@@ -1159,7 +1158,6 @@ function Library:SetDPIScale(DPIScale: number)
         local Bubble = Library.Bubble
         local BaseWidth = Bubble.Size.X.Offset
         local BaseHeight = Bubble.Size.Y.Offset
-        local BaseMargin = Library.BubbleMargin or 8
 
         local ScreenSize = ScreenGui.AbsoluteSize
         local BubbleScaleFactor = math.max(ScaleFactor, 0.001)
@@ -1168,13 +1166,13 @@ function Library:SetDPIScale(DPIScale: number)
         local LogicalScreenHeight = ScreenSize.Y / BubbleScaleFactor
 
         local ClampedY =
-            math.clamp(LogicalY, BaseMargin, math.max(BaseMargin, LogicalScreenHeight - BaseHeight - BaseMargin))
+            math.clamp(LogicalY, 0, math.max(0, LogicalScreenHeight - BaseHeight))
 
         local IsRight = Bubble.Position.X.Scale > 0.5
         if IsRight then
-            Bubble.Position = UDim2.new(1, -(BaseMargin + BaseWidth), 0, ClampedY)
+            Bubble.Position = UDim2.new(1, -BaseWidth, 0, ClampedY)
         else
-            Bubble.Position = UDim2.new(0, BaseMargin, 0, ClampedY)
+            Bubble.Position = UDim2.new(0, 0, 0, ClampedY)
         end
     end
 end
@@ -11793,7 +11791,6 @@ function Library:CreateWindow(WindowInfo)
         local function CreateBubble()
             local BubbleSizeInfo = WindowInfo.BubbleSize
             local BaseWidth, BaseHeight = BubbleSizeInfo.X.Offset, BubbleSizeInfo.Y.Offset
-            local BaseMargin = WindowInfo.BubbleMargin
             local Padding = WindowInfo.BubblePadding
             local StartSide = (WindowInfo.BubbleSide == "Left") and "Left" or "Right"
 
@@ -11801,7 +11798,7 @@ function Library:CreateWindow(WindowInfo)
             -- here are logical/BASE space. Bubble.AbsolutePosition and
             -- ScreenGui.AbsoluteSize, used later for drag-snap clamping, are
             -- SCREEN space -- any math mixing the two must convert first.
-            local Width, Height, Margin = BaseWidth, BaseHeight, BaseMargin
+            local Width, Height = BaseWidth, BaseHeight
 
             local Bubble = New("TextButton", {
                 AutoButtonColor = false,
@@ -11811,7 +11808,7 @@ function Library:CreateWindow(WindowInfo)
                 Size = BubbleSizeInfo,
                 Position = UDim2.new(
                     StartSide == "Right" and 1 or 0,
-                    StartSide == "Right" and -(Margin + Width) or Margin,
+                    StartSide == "Right" and -Width or 0,
                     0.5, -Height / 2
                 ),
                 ZIndex = 500,
@@ -11840,7 +11837,6 @@ function Library:CreateWindow(WindowInfo)
             table.insert(Library.Scales, BubbleScale)
             Library.Bubble = Bubble
             Library.BubbleScale = BubbleScale
-            Library.BubbleMargin = BaseMargin
 
             Library:AddOutline(Bubble)
 
@@ -11886,21 +11882,22 @@ function Library:CreateWindow(WindowInfo)
                 local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
 
                 -- Bubble.AbsolutePosition/ScreenGui.AbsoluteSize are SCREEN
-                -- space (post-UIScale). Margin/Height/Width and the TargetPos
-                -- we tween to are logical/BASE space (pre-UIScale, since
+                -- space (post-UIScale). Height/Width and the TargetPos we
+                -- tween to are logical/BASE space (pre-UIScale, since
                 -- Bubble.Position is written as base-space offsets). Convert
                 -- the measured Y back to base space before clamping/using it.
+                -- The bubble sits flush against the screen edge (no margin).
                 local LogicalY = Bubble.AbsolutePosition.Y / ScaleFactor
                 local LogicalScreenHeight = ScreenSize.Y / ScaleFactor
 
                 local ClampedY =
-                    math.clamp(LogicalY, Margin, math.max(Margin, LogicalScreenHeight - Height - Margin))
+                    math.clamp(LogicalY, 0, math.max(0, LogicalScreenHeight - Height))
 
                 local TargetPos
                 if ToSide == "Right" then
-                    TargetPos = UDim2.new(1, -(Margin + Width), 0, ClampedY)
+                    TargetPos = UDim2.new(1, -Width, 0, ClampedY)
                 else
-                    TargetPos = UDim2.new(0, Margin, 0, ClampedY)
+                    TargetPos = UDim2.new(0, 0, 0, ClampedY)
                 end
 
                 TweenService:Create(Bubble, SnapTweenInfo, { Position = TargetPos }):Play()
