@@ -40,7 +40,7 @@ end
 local ThemeManager = {}
 do
     local ThemeFields = { "FontColor", "MainColor", "AccentColor", "BackgroundColor", "OutlineColor" }
-    ThemeManager.Folder = "AstralSettings"
+    ThemeManager.Folder = "Astral"
 
     ThemeManager.Library = nil
     ThemeManager.AppliedToTab = false

@@ -50,13 +50,14 @@ end
 
 local SaveManager = {}
 do
-    SaveManager.Folder = "AstralSettings"
+    SaveManager.Folder = "Astral"
     SaveManager.SubFolder = ""
     SaveManager.Ignore = {}
     SaveManager.Library = nil
 
     SaveManager.CurrentConfig = nil
     SaveManager._Loading = false
+    SaveManager.ConfigVersion = 2
 
     SaveManager.Parser = {
         Toggle = {
@@ -224,7 +225,7 @@ do
 
         local fullPath = self:GetFilePath(name)
 
-        local data = {}
+        local data = { __AstralConfigVersion = self.ConfigVersion }
 
         for idx, toggle in pairs(self.Library.Toggles) do
             if not toggle.Type then continue end
@@ -265,10 +266,34 @@ do
 
         self._Loading = true
 
+        -- Configs created by older Astral versions did not have a schema
+        -- version.  A previous KeyPicker implementation could save "None"
+        -- even when the current script's Default is a real key (for example
+        -- the example's F1 binding).  Do not let that stale value overwrite
+        -- the current KeyPicker default on the first load after the fix.
+        -- Once this config is saved again it receives ConfigVersion = 2, so
+        -- an intentionally selected "None" is preserved normally.
+        local ConfigVersion = tonumber(decoded.__AstralConfigVersion) or 1
+
         for idx, value in pairs(decoded) do
+            if idx == "__AstralConfigVersion" then continue end
             if self.Ignore[idx] then continue end
 
             local object = self.Library.Toggles[idx] or self.Library.Options[idx]
+
+            if ConfigVersion < self.ConfigVersion
+                and object
+                and object.Type == "KeyPicker"
+                and value
+                and value.key == "None"
+                and object.Default ~= nil
+                and object.Default ~= "None"
+            then
+                -- Keep the script's declared default for this one stale
+                -- KeyPicker.  The rest of the old config still loads.
+                continue
+            end
+
             if object and object.Type and self.Parser[object.Type] then
                 pcall(self.Parser[object.Type].Load, object, value)
             end

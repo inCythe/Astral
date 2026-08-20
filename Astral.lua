@@ -3725,6 +3725,17 @@ do
             KeyPicker:Update()
         end
 
+        -- Apply the script-declared default after all picker internals
+        -- (including ModeButtons) have been constructed.
+        -- This makes the default authoritative instead of relying on the
+        -- initial raw fields above. SaveManager may subsequently replace it
+        -- with a saved value, which is the intended persistence behavior.
+        KeyPicker:SetValue({
+            Key = Info.Default,
+            Mode = Info.Mode,
+            Modifiers = Info.DefaultModifiers,
+        })
+
         function KeyPicker:SetText(Text)
             KeybindsToggle:SetText(Text)
             KeyPicker:Update()
