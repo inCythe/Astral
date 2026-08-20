@@ -273,13 +273,17 @@ local Library = {
     Overlays = {},
     OverlaysOrder = {},
     OverlayIdCounter = 0,
+    OverlayRegularBandCounter = 0,
+    OverlayContextBandCounter = 0,
     OverlayCascadeStep = 0,
 
     Corners = {},
 
-    WindowZIndex = 999,
-    OverlayZIndex = 1009,
+    -- 999 is the window/UI layer. All overlays start above it.
+    OverlayZIndex = 999,
     OverlayZIndexBandSize = 10,
+    OverlayContextMenuBaseZIndex = 1099,
+    OverlayContextMenuBandSize = 10,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -2129,12 +2133,22 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Library.Overlays[Id] = Table
     table.insert(Library.OverlaysOrder, Table)
 
-    -- Each overlay gets its own ZIndex band. The root of one overlay is never
-    -- allowed to share a layer with the content of another overlay.
-    -- Within one overlay, every child is exactly parent + 1.
+    -- Give regular overlays and context menus separate ZIndex ranges.
+    -- 999 = window/UI. Regular overlays start at 1009. Context menus always
+    -- start above the regular overlay range so they cannot be covered by
+    -- pass-through UI or another ordinary overlay. Children remain parent + 1.
     local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
     if Root and Root:IsA("GuiObject") then
-        Root.ZIndex = Library.OverlayZIndex + (Id * Library.OverlayZIndexBandSize)
+        local BandIndex
+        if OverlayType == "ContextMenu" then
+            Library.OverlayContextBandCounter = Library.OverlayContextBandCounter + 1
+            BandIndex = Library.OverlayContextBandCounter
+            Root.ZIndex = Library.OverlayContextMenuBaseZIndex + (BandIndex * Library.OverlayContextMenuBandSize)
+        else
+            Library.OverlayRegularBandCounter = Library.OverlayRegularBandCounter + 1
+            BandIndex = Library.OverlayRegularBandCounter
+            Root.ZIndex = Library.OverlayZIndex + (BandIndex * Library.OverlayZIndexBandSize)
+        end
         NormalizeOverlayZIndex(Root)
     end
 
@@ -2858,7 +2872,7 @@ function Library:AddContextMenu(
             Size = typeof(Size) == "function" and Size() or Size,
             TopImage = "rbxasset://textures/ui/Scroll/scroll-middle.png",
             Visible = false,
-            ZIndex = Library.OverlayZIndex,
+            ZIndex = Library.OverlayContextMenuBaseZIndex,
             Parent = ParentGui,
         })
     else
@@ -2866,7 +2880,7 @@ function Library:AddContextMenu(
             BackgroundColor3 = "BackgroundColor",
             Size = typeof(Size) == "function" and Size() or Size,
             Visible = false,
-            ZIndex = Library.OverlayZIndex,
+            ZIndex = Library.OverlayContextMenuBaseZIndex,
             Parent = ParentGui,
         })
     end
