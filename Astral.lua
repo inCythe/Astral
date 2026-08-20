@@ -279,7 +279,11 @@ local Library = {
 
     Corners = {},
 
-    -- 999 is the window/UI layer. All overlays start above it.
+    -- ZIndex hierarchy:
+    -- 999 = window/UI, 1000 = UI pass-through, 1009+ = overlays,
+    -- 1109+ = context menus. Keep these bands close and predictable.
+    WindowZIndex = 999,
+    UIPassthroughZIndex = 1000,
     OverlayZIndex = 999,
     OverlayZIndexBandSize = 10,
     OverlayContextMenuBaseZIndex = 1099,
@@ -3067,9 +3071,15 @@ function Library:AddContextMenu(
 
     function Table:Open()
         if Removed then
-            -- Menu instance is destroyed; silently refuse instead of
-            -- erroring or writing properties onto a dead Instance.
-            return
+            -- Removing an overlay destroys its current Instances, but the
+            -- overlay definition remains recreatable. Allow the old context
+            -- menu handle to be opened again instead of permanently
+            -- dead-ending it after :Remove().
+            local Recreated = Library:RecreateOverlay(Table.Id)
+            if Recreated and typeof(Recreated.Open) == "function" then
+                return Recreated:Open()
+            end
+            return Recreated
         end
 
         if CurrentMenu == Table then
@@ -3184,6 +3194,20 @@ function Library:AddContextMenu(
 
     Table.Recreate = function()
         return Library:AddContextMenu(Holder, Size, Offset, List, ActiveCallback, IgnoreCornerRadius)
+    end
+
+    -- Keep the creation recipe separate from the destroyed Menu instance.
+    -- This lets Remove()/RemoveAllOverlays() destroy the current menu while
+    -- still allowing the same logical context menu to be created again.
+    Table.Recreate = function()
+        return Library:AddContextMenu(
+            Holder,
+            Size,
+            Offset,
+            List,
+            ActiveCallback,
+            IgnoreCornerRadius
+        )
     end
 
     Library:RegisterOverlay("ContextMenu", nil, Table)
@@ -7929,6 +7953,9 @@ do
             ClipsDescendants = true,
             Size = UDim2.new(1, 0, 0, Info.Height),
             Visible = Passthrough.Visible,
+            -- Pass-through belongs immediately above the window, but below
+            -- every overlay/context-menu band.
+            ZIndex = Library.UIPassthroughZIndex,
 
             Parent = Container,
         })
@@ -7942,7 +7969,7 @@ do
             end
         end)
 
-        local PassthroughZIndex = Holder.ZIndex + 1
+        local PassthroughZIndex = Library.UIPassthroughZIndex
         Passthrough.Instance.ZIndex = PassthroughZIndex
         for _, Descendant in Passthrough.Instance:GetDescendants() do
             if Descendant:IsA("GuiObject") then
@@ -7985,7 +8012,7 @@ do
                 end
             end)
 
-            local PassthroughZIndex = Holder.ZIndex + 1
+            local PassthroughZIndex = Library.UIPassthroughZIndex
             Passthrough.Instance.ZIndex = PassthroughZIndex
             for _, Descendant in Passthrough.Instance:GetDescendants() do
                 if Descendant:IsA("GuiObject") then
