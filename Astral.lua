@@ -2069,8 +2069,11 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     local Id = Library.OverlayIdCounter
 
     Table.Id = Id
+    Table.LogicalId = Id
     Table.OverlayType = OverlayType
     Table.OverlayName = Name or (OverlayType .. " #" .. Id)
+    Table._OverlayRemoved = false
+    Table._OverlayReplacement = nil
 
     if not Table.SetVisible then
         function Table:SetVisible(Visible: boolean)
@@ -2097,26 +2100,134 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         end
     end
 
+    local UserRecreate = Table.Recreate
     local BaseRemove = Table.Remove
     local Removed = false
+
+    local function BuildReplacement()
+        local Entry = Library.RemovedOverlays and Library.RemovedOverlays[Id]
+        if not Entry or typeof(Entry.Recreate) ~= "function" then
+            return nil
+        end
+
+        local Existing = Table._OverlayReplacement
+        if Existing and Existing._OverlayRemoved ~= true then
+            return Existing
+        end
+
+        local Replacement = Entry.Recreate()
+        if Replacement then
+            Replacement.LogicalId = Id
+            Table._OverlayReplacement = Replacement
+            Entry.Live = Replacement
+        end
+        return Replacement
+    end
+
+    local OriginalSetVisible = Table.SetVisible
+    local OriginalIsVisible = Table.IsVisible
+    local OriginalToggle = Table.Toggle
+    local OriginalOpen = Table.Open
+    local OriginalClose = Table.Close
+    local OriginalSetText = Table.SetText
+    local OriginalSetPosition = Table.SetPosition
+    local OriginalSetSize = Table.SetSize
+
+    function Table:SetVisible(Visible: boolean)
+        if Removed then
+            local Replacement = BuildReplacement()
+            if Replacement then
+                return Replacement:SetVisible(Visible)
+            end
+            return nil
+        end
+        return OriginalSetVisible(Table, Visible)
+    end
+
+    function Table:IsVisible(): boolean
+        if Removed then
+            local Replacement = BuildReplacement()
+            return Replacement and Replacement:IsVisible() or false
+        end
+        return OriginalIsVisible(Table)
+    end
+
+    if OriginalToggle then
+        function Table:Toggle(...)
+            if Removed then
+                local Replacement = BuildReplacement()
+                return Replacement and Replacement:Toggle(...) or nil
+            end
+            return OriginalToggle(Table, ...)
+        end
+    end
+
+    if OriginalOpen then
+        function Table:Open(...)
+            if Removed then
+                local Replacement = BuildReplacement()
+                return Replacement and Replacement:Open(...) or nil
+            end
+            return OriginalOpen(Table, ...)
+        end
+    end
+
+    if OriginalClose then
+        function Table:Close(...)
+            if Removed then
+                local Replacement = BuildReplacement()
+                return Replacement and Replacement:Close(...) or nil
+            end
+            return OriginalClose(Table, ...)
+        end
+    end
+
+    if OriginalSetText then
+        function Table:SetText(...)
+            if Removed then
+                local Replacement = BuildReplacement()
+                return Replacement and Replacement:SetText(...) or nil
+            end
+            return OriginalSetText(Table, ...)
+        end
+    end
+
+    if OriginalSetPosition then
+        function Table:SetPosition(...)
+            if Removed then
+                local Replacement = BuildReplacement()
+                return Replacement and Replacement:SetPosition(...) or nil
+            end
+            return OriginalSetPosition(Table, ...)
+        end
+    end
+
+    if OriginalSetSize then
+        function Table:SetSize(...)
+            if Removed then
+                local Replacement = BuildReplacement()
+                return Replacement and Replacement:SetSize(...) or nil
+            end
+            return OriginalSetSize(Table, ...)
+        end
+    end
 
     function Table:Remove()
         if Removed then
             return
         end
         Removed = true
+        Table._OverlayRemoved = true
 
-        -- Keep a recreation factory when the overlay supplied one. Removing
-        -- an overlay must not make the corresponding UI feature permanently
-        -- unavailable. The old instance is destroyed, but its creation recipe
-        -- remains available through Library:RecreateOverlay(Id).
-        if Table.Recreate then
-            Library.RemovedOverlays = Library.RemovedOverlays or {}
+        Library.RemovedOverlays = Library.RemovedOverlays or {}
+        local Factory = UserRecreate or Table.Recreate
+        if Factory then
             Library.RemovedOverlays[Id] = {
                 Id = Id,
                 OverlayType = OverlayType,
                 OverlayName = Table.OverlayName,
-                Recreate = Table.Recreate,
+                Recreate = Factory,
+                Live = nil,
             }
         end
 
@@ -2137,10 +2248,6 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Library.Overlays[Id] = Table
     table.insert(Library.OverlaysOrder, Table)
 
-    -- Give regular overlays and context menus separate ZIndex ranges.
-    -- 999 = window/UI. Regular overlays start at 1009. Context menus always
-    -- start above the regular overlay range so they cannot be covered by
-    -- pass-through UI or another ordinary overlay. Children remain parent + 1.
     local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
     if Root and Root:IsA("GuiObject") then
         local BandIndex
@@ -2160,18 +2267,30 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
 end
 
 function Library:RecreateOverlay(Id: number)
+    local Live = Library.Overlays[Id]
+    if Live then
+        return Live
+    end
+
     local Entry = Library.RemovedOverlays and Library.RemovedOverlays[Id]
     if not Entry or typeof(Entry.Recreate) ~= "function" then
         return nil
     end
 
-    Library.RemovedOverlays[Id] = nil
     local NewOverlay = Entry.Recreate()
+    if NewOverlay then
+        NewOverlay.LogicalId = Id
+        Entry.Live = NewOverlay
+    end
     return NewOverlay
 end
 
 function Library:GetOverlay(Id: number)
-    return Library.Overlays[Id]
+    local Overlay = Library.Overlays[Id]
+    if Overlay then
+        return Overlay
+    end
+    return Library:RecreateOverlay(Id)
 end
 
 function Library:GetOverlays(OverlayType: string?)
@@ -2190,7 +2309,7 @@ function Library:GetOverlays(OverlayType: string?)
 end
 
 function Library:SetOverlayVisible(Id: number, Visible: boolean)
-    local Overlay = Library.Overlays[Id]
+    local Overlay = Library:GetOverlay(Id)
     if Overlay then
         Overlay:SetVisible(Visible)
     end
@@ -2198,7 +2317,7 @@ function Library:SetOverlayVisible(Id: number, Visible: boolean)
 end
 
 function Library:ToggleOverlay(Id: number)
-    local Overlay = Library.Overlays[Id]
+    local Overlay = Library:GetOverlay(Id)
     if Overlay then
         Overlay:SetVisible(not Overlay:IsVisible())
     end
@@ -2213,8 +2332,23 @@ function Library:RemoveOverlay(Id: number)
 end
 
 function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
+    local Seen = {}
+
     for _, Overlay in Library:GetOverlays(OverlayType) do
+        Seen[Overlay.LogicalId or Overlay.Id] = true
         Overlay:SetVisible(Visible)
+    end
+
+    -- Removed overlays still exist as logical definitions. Recreate them on
+    -- demand so RemoveAllOverlays() is reversible and the manager never loses
+    -- the ability to show an overlay again.
+    for Id, Entry in pairs(Library.RemovedOverlays or {}) do
+        if (not OverlayType or Entry.OverlayType == OverlayType) and not Seen[Id] then
+            local Overlay = Library:RecreateOverlay(Id)
+            if Overlay then
+                Overlay:SetVisible(Visible)
+            end
+        end
     end
 end
 
@@ -8987,6 +9121,7 @@ function Library:CreateWindow(WindowInfo)
             end,
             Name = "Main",
             Text = "",
+            ZIndex = Library.WindowZIndex,
             Position = WindowInfo.Position,
             Size = WindowInfo.Size,
             Visible = false,
@@ -13319,6 +13454,7 @@ function Library:CreateLoading(LoadingInfo)
 
     local MainFrame = New("TextButton", {
         Name = "Main",
+        ZIndex = Library.WindowZIndex,
         AnchorPoint = Vector2.new(0.5, 0.5),
         BackgroundColor3 = function()
             return Library:GetBetterColor(Library.Scheme.BackgroundColor, -1)
