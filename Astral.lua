@@ -1150,6 +1150,33 @@ function Library:SetDPIScale(DPIScale: number)
     for _, Callback in Library.DPIScaleCallbacks do
         Library:SafeCallback(Callback, ScaleFactor)
     end
+
+    -- Keep the bubble's on-screen position valid after a scale change: its
+    -- Size/Position are logical/BASE space (the UIScale loop above already
+    -- rescaled it), so re-clamp using the same base-space math SnapToSide
+    -- uses, preserving whichever side it's currently snapped to.
+    if Library.Bubble and Library.Bubble.Parent and ScreenGui then
+        local Bubble = Library.Bubble
+        local BaseWidth = Bubble.Size.X.Offset
+        local BaseHeight = Bubble.Size.Y.Offset
+        local BaseMargin = Library.BubbleMargin or 8
+
+        local ScreenSize = ScreenGui.AbsoluteSize
+        local BubbleScaleFactor = math.max(ScaleFactor, 0.001)
+
+        local LogicalY = Bubble.AbsolutePosition.Y / BubbleScaleFactor
+        local LogicalScreenHeight = ScreenSize.Y / BubbleScaleFactor
+
+        local ClampedY =
+            math.clamp(LogicalY, BaseMargin, math.max(BaseMargin, LogicalScreenHeight - BaseHeight - BaseMargin))
+
+        local IsRight = Bubble.Position.X.Scale > 0.5
+        if IsRight then
+            Bubble.Position = UDim2.new(1, -(BaseMargin + BaseWidth), 0, ClampedY)
+        else
+            Bubble.Position = UDim2.new(0, BaseMargin, 0, ClampedY)
+        end
+    end
 end
 
 function Library:GiveDPIScaleCallback(Callback: (ScaleFactor: number) -> ())
@@ -11799,7 +11826,22 @@ function Library:CreateWindow(WindowInfo)
                     Parent = Bubble,
                 })
             )
-            table.insert(Library.Scales, New("UIScale", { Parent = Bubble }))
+
+            -- IMPORTANT: the bubble is created well after the initial DPI
+            -- calculation (it may even be created much later, lazily, via
+            -- ToggleBubble). A fresh UIScale defaults to Scale = 1, so it
+            -- must be explicitly set to the CURRENT scale immediately,
+            -- rather than waiting for the next SetDPIScale() call -- otherwise
+            -- the bubble briefly renders at full/wrong size.
+            local BubbleScale = New("UIScale", {
+                Scale = math.max(Library.DPIScale or 1, 0.001),
+                Parent = Bubble,
+            })
+            table.insert(Library.Scales, BubbleScale)
+            Library.Bubble = Bubble
+            Library.BubbleScale = BubbleScale
+            Library.BubbleMargin = BaseMargin
+
             Library:AddOutline(Bubble)
 
             local IconSize = UDim2.fromOffset(
