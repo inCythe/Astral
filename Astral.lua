@@ -12551,8 +12551,16 @@ function Library:CreateWindow(WindowInfo)
             local MaxHeight  = math.max(Viewport.Y - (AbsPos.Y + AbsSize.Y + 4) - 12, 80)
             local WantHeight = math.min(400, MaxHeight)
 
+            -- SearchOverlay has a UIScale on it (see NewTrackedScale above),
+            -- so its Position.Offset is interpreted in LOGICAL/pre-scale
+            -- space and gets multiplied by ScaleFactor at render time — same
+            -- as Size just above. AbsPos/AbsSize here are already in SCREEN
+            -- space (post-scale), so we must divide by ScaleFactor before
+            -- writing them into Position, or the UIScale applies a second
+            -- time and the overlay renders offset from the search box,
+            -- worse the further ScaleFactor is from 1.
             SearchOverlay.Size     = UDim2.fromOffset((AbsSize.X + 3) / ScaleFactor, WantHeight / ScaleFactor)
-            SearchOverlay.Position = UDim2.fromOffset(AbsPos.X, AbsPos.Y + AbsSize.Y + 4)
+            SearchOverlay.Position = UDim2.fromOffset(AbsPos.X / ScaleFactor, (AbsPos.Y + AbsSize.Y + 4) / ScaleFactor)
         end
 
         Library:GiveDPIScaleCallback(function()
