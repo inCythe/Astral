@@ -902,6 +902,19 @@ KeySection:AddButton({
     end,
 })
 
+-- Every KeyPicker created above (BoundToggleKey, HoldToggleKey, PressKey)
+-- auto-registers a row in the floating Keybinds panel, rendered as
+-- "[Key] Text (Mode)" using each picker's own Text field -- this is why the
+-- three pickers above were given distinct, descriptive Text values instead
+-- of all sharing something generic like "Key". Library.KeybindFrame is the
+-- panel itself; Library.KeybindContainer holds its entries.
+KeySection:AddButton({
+    Text = "Toggle Keybinds Panel",
+    Func = function()
+        Library.KeybindFrame.Visible = not Library.KeybindFrame.Visible
+    end,
+})
+
 -- ColorPicker attaches to a Toggle or Label:
 --   Toggle:AddColorPicker(Idx, Info) / Label:AddColorPicker(Idx, Info)
 --   Default (Color3), Transparency (0-1, adds an alpha slider), Title
