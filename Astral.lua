@@ -2982,12 +2982,23 @@ New("UIPadding", {
     PaddingTop = UDim.new(0, 2),
     Parent = TooltipLabel,
 })
-table.insert(
-    Library.Scales,
-    New("UIScale", {
-        Parent = TooltipLabel,
-    })
-)
+-- No independent UIScale on TooltipLabel anymore -- same bug class as the
+-- old SearchOverlay/ContextMenu. TooltipLabel gets reparented at hover-time
+-- to whichever container is showing it (see DoHover below), and its
+-- Position is driven off raw Mouse.X/Y. Giving it its own UIScale while
+-- also living under a differently-scaled ancestor (MainFrame, a Dialog,
+-- the loading screen's frame) is two independently-scaled trees again, and
+-- would need the same manual ScaleFactor conversion that this code never
+-- actually did. Instead TooltipLabel is parented under the nearest ancestor
+-- of HoverInstance that already owns a UIScale (falling back to the owning
+-- ScreenGui when nothing better is found, same fallback FindScaledContainer
+-- callers use elsewhere), and Position is computed relative to THAT
+-- container in its own logical (pre-scale) space -- so there's only ever
+-- one shared scale node between the tooltip and whatever it's attached to.
+local FallbackTooltipScale = New("UIScale", {
+    Parent = TooltipLabel,
+})
+table.insert(Library.Scales, FallbackTooltipScale)
 New("UIStroke", {
     Color = "OutlineColor",
     Parent = TooltipLabel,
@@ -3034,11 +3045,24 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
         end
         CurrentHoverInstance = HoverInstance
 
+        -- Find the nearest ancestor of HoverInstance that already owns a
+        -- UIScale (MainFrame, a Dialog's frame, the loading screen's frame,
+        -- etc.) and share that scale instead of always going to the
+        -- top-level ScreenGui with an independent one.
+        local ScaledContainer = Library:FindScaledContainer(HoverInstance)
+
         local ParentGui = HoverInstance:FindFirstAncestorOfClass("ScreenGui")
         if ParentGui ~= ScreenGui and (Library.ActiveLoading and ParentGui ~= Library.ActiveLoading.ScreenGui) then
             ParentGui = ScreenGui
         end
-        TooltipLabel.Parent = ParentGui
+
+        if ScaledContainer then
+            TooltipLabel.Parent = ScaledContainer
+            FallbackTooltipScale.Parent = nil
+        else
+            TooltipLabel.Parent = ParentGui
+            FallbackTooltipScale.Parent = TooltipLabel
+        end
 
         TooltipLabel.Text = TooltipTable.Disabled and DisabledInfoStr or InfoStr
         TooltipLabel.Visible = true
@@ -3049,10 +3073,29 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
             and Library:MouseIsOverFrame(HoverInstance, Mouse)
             and not (CurrentMenu and Library:MouseIsOverFrame(CurrentMenu.Menu, Mouse))
         do
-            TooltipLabel.Position = UDim2.fromOffset(
-                Mouse.X + (Library.ShowCustomCursor and 8 or 14),
-                Mouse.Y + (Library.ShowCustomCursor and 8 or 12)
-            )
+            local OffsetX = Mouse.X + (Library.ShowCustomCursor and 8 or 14)
+            local OffsetY = Mouse.Y + (Library.ShowCustomCursor and 8 or 12)
+
+            if ScaledContainer then
+                -- Mouse.X/Y is raw screen space. ScaledContainer's own
+                -- content is laid out in its logical (pre-scale) space, so
+                -- convert: subtract the container's screen-space origin,
+                -- then divide by the scale factor that container's UIScale
+                -- is currently applying -- the same relative-space math the
+                -- search overlay and context menus use, rather than writing
+                -- raw screen pixels into a Position that's being read back
+                -- through that container's UIScale.
+                local ScaleInst = ScaledContainer:FindFirstChildOfClass("UIScale")
+                local Factor = (ScaleInst and ScaleInst.Scale ~= 0) and ScaleInst.Scale or 1
+                local ContainerOrigin = ScaledContainer.AbsolutePosition
+
+                TooltipLabel.Position = UDim2.fromOffset(
+                    (OffsetX - ContainerOrigin.X) / Factor,
+                    (OffsetY - ContainerOrigin.Y) / Factor
+                )
+            else
+                TooltipLabel.Position = UDim2.fromOffset(OffsetX, OffsetY)
+            end
 
             RunService.RenderStepped:Wait()
         end
@@ -3221,6 +3264,14 @@ do
                 Info.Mode = "Toggle"
             end
         end
+
+        -- KeyPicker.Mode was captured from Info.Mode BEFORE the two blocks
+        -- above could correct/override Info.Mode (forcing "Press", or
+        -- falling back to "Toggle" when SyncToggleState's mode isn't in the
+        -- allowed Modes list). Without resyncing here, KeyPicker.Mode keeps
+        -- pointing at the pre-correction value, which then desyncs from
+        -- which ModeButton actually gets selected below.
+        KeyPicker.Mode = Info.Mode
 
         local Picking = false
 
@@ -3485,8 +3536,10 @@ do
             })
 
             function ModeButton:Select()
-                for _, Button in ModeButtons do
-                    Button:Deselect()
+                for _, OtherButton in ModeButtons do
+                    if OtherButton ~= ModeButton then
+                        OtherButton:Deselect()
+                    end
                 end
 
                 KeyPicker.Mode = Mode
@@ -3498,8 +3551,23 @@ do
             end
 
             function ModeButton:Deselect()
-                KeyPicker.Mode = nil
-
+                -- IMPORTANT: this must NOT touch KeyPicker.Mode. KeyPicker.Mode
+                -- is one shared field on the KeyPicker table, not something
+                -- scoped per-button -- every ModeButton created in the loop
+                -- below calls Deselect() on itself at construction time unless
+                -- it happens to be the currently-selected mode. Before this
+                -- fix, Deselect() unconditionally set KeyPicker.Mode = nil, so
+                -- the LAST mode button constructed (not necessarily the
+                -- Default mode) silently won and often left KeyPicker.Mode as
+                -- nil entirely. That nil Mode then flows into SetValue() as
+                -- Mode = Mode or KeyPicker.Mode (still nil), ModeButtons[nil]
+                -- is nil so nothing reselects, GetState()'s Mode branches all
+                -- fall through, and the picker looks "stuck"/broken -- which
+                -- is what the "keypicker doing None" reports were seeing: not
+                -- the key itself being "None", but the Mode collapsing to nil
+                -- right after creation and the picker's Toggle/Hold/Press
+                -- behavior never actually engaging. Deselect() only needs to
+                -- update this button's own visuals.
                 Button.BackgroundTransparency = 1
                 Button.TextTransparency = 0.5
             end
@@ -5466,11 +5534,21 @@ do
 
         if Input.Finished then
             Box.FocusLost:Connect(function(Enter)
-                if not Enter then
-                    if Input.ClearTextOnBlur then
-                        Box.Text = Input.Value
-                    end
-
+                -- Previously this only committed Box.Text into Input.Value
+                -- when the box lost focus via Enter (Enter == true) and just
+                -- `return`ed otherwise -- discarding whatever was typed. That
+                -- silently breaks the documented Dialog pattern of "type
+                -- into an Input, then click a footer button to confirm":
+                -- clicking any other control (a footer button, another
+                -- field, clicking outside) blurs the TextBox with
+                -- Enter == false, so Input.Value/Options[Idx].Value never
+                -- picked up the typed text and callbacks reading it saw the
+                -- stale Default (often "nil"/"---"/whatever EmptyReset was)
+                -- instead of what the user actually typed. Any focus loss
+                -- should commit the current text -- Enter is just the fast
+                -- path -- so both branches now call SetValue.
+                if not Enter and Input.ClearTextOnBlur then
+                    Box.Text = Input.Value
                     return
                 end
 
