@@ -273,6 +273,7 @@ local Library = {
     Overlays = {},
     OverlaysOrder = {},
     OverlayIdCounter = 0,
+    OverlayCascadeStep = 0,
 
     Corners = {},
 
@@ -1824,7 +1825,14 @@ function Library:MakeDraggable(UI: GuiObject, DragFrame: GuiObject, IgnoreToggle
             (not IgnoreToggled and not Library.Toggled)
             or (IsMainWindow and Library.CantDragForced)
             or not (OwningScreenGui and OwningScreenGui.Parent)
+            or not UI.Visible
         then
+            -- Also bail out (and cancel any in-progress drag) once the UI is
+            -- hidden. Without this, hiding an overlay mid-drag left Dragging
+            -- latched true; the very next time it was shown again, an
+            -- unrelated InputChanged could still be "mid-drag" from the
+            -- stale StartPos/FramePos captured before it was hidden, causing
+            -- it to visibly jump/offset the instant it reappeared.
             Dragging = false
             if Changed and Changed.Connected then
                 Changed:Disconnect()
@@ -1982,6 +1990,18 @@ function Library:MakeOutline(Frame: GuiObject, Corner: number?, ZIndex: number?)
     return Holder, Outline
 end
 
+function Library:GetNextOverlayPosition(): UDim2
+    -- Every draggable overlay used to spawn at a hardcoded UDim2.fromOffset(6, 6).
+    -- That's not a "drift" bug per call, but it means the 2nd, 3rd, 4th... overlay
+    -- you create/show all land in exactly the same spot, stacked directly on top
+    -- of one another, which reads as "wrong position" / "offset" once you have
+    -- more than one on screen. Cascade each new one by a small step instead.
+    local Step = Library.OverlayCascadeStep
+    Library.OverlayCascadeStep = (Step + 1) % 8 -- wrap so it doesn't walk off-screen
+    local Offset = 6 + (Step * 18)
+    return UDim2.fromOffset(Offset, Offset)
+end
+
 function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [any]: any })
     Library.OverlayIdCounter = Library.OverlayIdCounter + 1
     local Id = Library.OverlayIdCounter
@@ -2016,14 +2036,28 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     end
 
     local BaseRemove = Table.Remove
+    local Removed = false
     function Table:Remove()
-        Library.Overlays[Id] = nil
+        -- Idempotent: guards against double-removal (e.g. a UI element's
+        -- Destroyed connection firing after :Remove() already ran), which
+        -- would otherwise re-run BaseRemove on already-destroyed instances
+        -- or corrupt Library.OverlaysOrder a second time.
+        if Removed then
+            return
+        end
+        Removed = true
+
+        if Library.Overlays[Id] == Table then
+            Library.Overlays[Id] = nil
+        end
+
         for Index, Entry in Library.OverlaysOrder do
             if Entry == Table then
                 table.remove(Library.OverlaysOrder, Index)
                 break
             end
         end
+
         BaseRemove(Table)
     end
 
@@ -2038,17 +2072,18 @@ function Library:GetOverlay(Id: number)
 end
 
 function Library:GetOverlays(OverlayType: string?)
-    if not OverlayType then
-        return Library.OverlaysOrder
-    end
-
-    local Filtered = {}
+    -- Always return a shallow copy. Callers (SetAllOverlaysVisible,
+    -- RemoveAllOverlays, or user code) frequently call :Remove() while
+    -- iterating the result, and :Remove() mutates Library.OverlaysOrder in
+    -- place. Handing back the live array meant table.remove() shifted
+    -- indices mid-iteration and silently skipped every other entry.
+    local Result = {}
     for _, Overlay in Library.OverlaysOrder do
-        if Overlay.OverlayType == OverlayType then
-            table.insert(Filtered, Overlay)
+        if not OverlayType or Overlay.OverlayType == OverlayType then
+            table.insert(Result, Overlay)
         end
     end
-    return Filtered
+    return Result
 end
 
 function Library:SetOverlayVisible(Id: number, Visible: boolean)
@@ -2095,7 +2130,7 @@ function Library:AddDraggableLabel(Text: string)
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = "BackgroundColor",
         Size = UDim2.fromOffset(0, 0),
-        Position = UDim2.fromOffset(6, 6),
+        Position = Library:GetNextOverlayPosition(),
         Text = Text,
         TextSize = 15,
         ZIndex = Library.OverlayZIndex,
@@ -2150,7 +2185,7 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
 
     local Button = New("TextButton", {
         BackgroundColor3 = "BackgroundColor",
-        Position = UDim2.fromOffset(6, 6),
+        Position = Library:GetNextOverlayPosition(),
         TextSize = 16,
         ZIndex = Library.OverlayZIndex,
         Parent = OwningScreenGui,
@@ -2206,7 +2241,7 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = "BackgroundColor",
-        Position = UDim2.fromOffset(6, 6),
+        Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(0, 0),
         ZIndex = Library.OverlayZIndex,
         Parent = OwningScreenGui,
@@ -2304,7 +2339,7 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
 
     local Holder = New("Frame", {
         BackgroundColor3 = "BackgroundColor",
-        Position = UDim2.fromOffset(6, 6),
+        Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(180, 44),
         ZIndex = Library.OverlayZIndex,
         Parent = OwningScreenGui,
@@ -2396,7 +2431,7 @@ function Library:AddDraggableMenu(Name: string)
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = "BackgroundColor",
-        Position = UDim2.fromOffset(6, 6),
+        Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(ResolvedWidth, 0),
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
@@ -2594,9 +2629,6 @@ function Library:AddDraggableMenu(Name: string)
     MinimizeBtn.MouseButton1Click:Connect(function()
         SetMenuCollapsed(not MenuCollapsed)
     end)
-    CloseBtn.MouseButton1Click:Connect(function()
-        Holder:Destroy()
-    end)
 
     Library:MakeDraggable(Holder, LabelHolder, true)
 
@@ -2628,6 +2660,16 @@ function Library:AddDraggableMenu(Name: string)
     setmetatable(ContainerObj, BaseSection)
 
     Library:RegisterOverlay("DraggableMenu", Name, ContainerObj)
+
+    -- IMPORTANT: route the close button through ContainerObj:Remove() (which
+    -- is now the RegisterOverlay-wrapped version) instead of destroying the
+    -- Holder directly. Destroying it directly would leave a ghost entry in
+    -- Library.Overlays / Library.OverlaysOrder pointing at a destroyed
+    -- instance, breaking GetOverlays/SetAllOverlaysVisible/RemoveAllOverlays
+    -- and permanently orphaning that Id.
+    CloseBtn.MouseButton1Click:Connect(function()
+        ContainerObj:Remove()
+    end)
 
     return Holder, Container, ContainerObj
 end
