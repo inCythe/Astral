@@ -11957,9 +11957,21 @@ function Library:CreateWindow(WindowInfo)
                         Moved = true
                     end
 
+                    -- Input.Position/Delta are real SCREEN-space pixels (mouse
+                    -- movement), but Bubble.Position's offset is BASE/logical
+                    -- space (Roblox divides it by UIScale.Scale at render
+                    -- time). Adding a raw screen-space delta onto a base-space
+                    -- offset makes the bubble drift away from the cursor at
+                    -- any DPI other than 1x. Convert the delta into base
+                    -- space first so 1 screen pixel of mouse movement always
+                    -- maps to 1 rendered pixel of bubble movement.
+                    local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
+                    local BaseDeltaX = Delta.X / ScaleFactor
+                    local BaseDeltaY = Delta.Y / ScaleFactor
+
                     Bubble.Position = UDim2.new(
-                        StartPos.X.Scale, StartPos.X.Offset + Delta.X,
-                        StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y
+                        StartPos.X.Scale, StartPos.X.Offset + BaseDeltaX,
+                        StartPos.Y.Scale, StartPos.Y.Offset + BaseDeltaY
                     )
                 end
             end))
