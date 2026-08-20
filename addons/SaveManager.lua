@@ -50,14 +50,13 @@ end
 
 local SaveManager = {}
 do
-    SaveManager.Folder = "Astral"
+    SaveManager.Folder = "AstralSettings"
     SaveManager.SubFolder = ""
     SaveManager.Ignore = {}
     SaveManager.Library = nil
 
     SaveManager.CurrentConfig = nil
     SaveManager._Loading = false
-    SaveManager.ConfigVersion = 2
 
     SaveManager.Parser = {
         Toggle = {
@@ -110,10 +109,25 @@ do
         },
         KeyPicker = {
             Save = function(object)
-                return { mode = object.Mode, key = object.Value, modifiers = object.Modifiers }
+                return {
+                    mode = object.Mode,
+                    key = object.Value,
+                    modifiers = object.Modifiers,
+                }
             end,
             Load = function(object, value)
-                object:SetValue({ value.key, value.mode, value.modifiers })
+                if type(value) ~= "table" then return end
+
+                local key = value.key
+                local mode = value.mode or object.Mode or object.DefaultMode
+                local modifiers = value.modifiers
+
+                -- A stale/old config can contain key = "None". Do not let that
+                -- value destroy a script-declared default when the config is being
+                -- recreated/reset. Explicitly saved None is still respected when
+                -- loading an existing user config; fresh defaults are handled by
+                -- SaveManager:ResetToDefaults below.
+                object:SetValue({ Key = key, Mode = mode, Modifiers = modifiers })
             end,
         },
         Input = {
@@ -225,7 +239,7 @@ do
 
         local fullPath = self:GetFilePath(name)
 
-        local data = { __AstralConfigVersion = self.ConfigVersion }
+        local data = {}
 
         for idx, toggle in pairs(self.Library.Toggles) do
             if not toggle.Type then continue end
@@ -266,34 +280,10 @@ do
 
         self._Loading = true
 
-        -- Configs created by older Astral versions did not have a schema
-        -- version.  A previous KeyPicker implementation could save "None"
-        -- even when the current script's Default is a real key (for example
-        -- the example's F1 binding).  Do not let that stale value overwrite
-        -- the current KeyPicker default on the first load after the fix.
-        -- Once this config is saved again it receives ConfigVersion = 2, so
-        -- an intentionally selected "None" is preserved normally.
-        local ConfigVersion = tonumber(decoded.__AstralConfigVersion) or 1
-
         for idx, value in pairs(decoded) do
-            if idx == "__AstralConfigVersion" then continue end
             if self.Ignore[idx] then continue end
 
             local object = self.Library.Toggles[idx] or self.Library.Options[idx]
-
-            if ConfigVersion < self.ConfigVersion
-                and object
-                and object.Type == "KeyPicker"
-                and value
-                and value.key == "None"
-                and object.Default ~= nil
-                and object.Default ~= "None"
-            then
-                -- Keep the script's declared default for this one stale
-                -- KeyPicker.  The rest of the old config still loads.
-                continue
-            end
-
             if object and object.Type and self.Parser[object.Type] then
                 pcall(self.Parser[object.Type].Load, object, value)
             end
@@ -396,7 +386,22 @@ do
 
         for idx, option in pairs(self.Library.Options) do
             if self.Ignore[idx] then continue end
-            if option.Default ~= nil and option.SetValue then
+
+            if option.Type == "KeyPicker" and option.SetValue then
+                -- KeyPicker.Default used to be copied from the live Value, which
+                -- means a previous load of "None" could turn the supposed default
+                -- into "None" permanently. Use the immutable script-declared
+                -- DefaultKey/DefaultMode/DefaultModifiers instead.
+                local key = option.DefaultKey or option.Default or "None"
+                local mode = option.DefaultMode or option.Mode
+                local modifiers = table.clone(option.DefaultModifiers or {})
+
+                pcall(option.SetValue, option, {
+                    Key = key,
+                    Mode = mode,
+                    Modifiers = modifiers,
+                })
+            elseif option.Default ~= nil and option.SetValue then
                 pcall(option.SetValue, option, option.Default)
             end
         end
@@ -496,8 +501,11 @@ do
         if table.find(list, name) then
             self:Load(name)
         else
-            self:Save(name)
+            -- A brand-new config must be created from the library/example
+            -- defaults, never from whatever values happen to be in memory.
+            self:ResetToDefaults()
             self.CurrentConfig = name
+            self:Save(name)
         end
 
         return name

@@ -2,6 +2,8 @@
 -- ASTRAL UI — QUICK REFERENCE EXAMPLE
 --============================================================================
 
+-- Use the patched Astral library.
+-- If you publish this patch to your repo, point this URL at that patched Astral.lua.
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/Astral/refs/heads/main/Astral.lua"))()
 
 --============================================================================
@@ -20,7 +22,7 @@ local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/inCyt
 local Window = Library:CreateWindow({
     Title            = "Astral UI — Reference",
     Icon             = "AstralIcon",
-    Footer           = "Quick Reference v2.1 — KeyPicker Defaults Fixed",
+    Footer           = "Quick Reference v2.0",
     Size             = UDim2.fromOffset(940, 620),
     Center           = true,
     Resizable        = true,
@@ -843,16 +845,6 @@ DisabledDemo = ButtonSection:AddButton({
 -- Methods: SetValue({Key,Mode,Modifiers}), GetState, SetText, OnChanged, OnClick
 local KeySection = ActionsTab:AddRightSection("Key Picker — every mode")
 
--- Script-declared KeyPicker defaults. These are intentionally kept in one
--- place so the example and the library's fresh-config behavior stay in sync.
--- Deleting the config must recreate these values instead of falling back to
--- "None". Saved config values still override them when a config exists.
-local ExampleKeyDefaults = {
-    BoundToggleKey = { Key = "F1", Mode = "Toggle", Modifiers = {} },
-    HoldToggleKey = { Key = "MB2", Mode = "Hold", Modifiers = {} },
-    PressKey = { Key = "F3", Mode = "Press", Modifiers = { "LCtrl", "LShift" } },
-}
-
 local BoundToggle = KeySection:AddToggle("BoundToggle", {
     Text = "Keybound Toggle",
     Default = false,
@@ -862,9 +854,8 @@ local BoundToggle = KeySection:AddToggle("BoundToggle", {
 -- Callback but never calls Toggle:SetValue() under the hood.
 local BoundKey = BoundToggle:AddKeyPicker("BoundToggleKey", {
     Text = "Toggle Keybind",
-    Default = ExampleKeyDefaults.BoundToggleKey.Key,
-    DefaultModifiers = ExampleKeyDefaults.BoundToggleKey.Modifiers,
-    Mode = ExampleKeyDefaults.BoundToggleKey.Mode,
+    Default = "F1",
+    Mode = "Toggle",
     Modes = { "Toggle", "Hold", "Always" },
     SyncToggleState = true,
 })
@@ -879,9 +870,8 @@ local HoldToggle = KeySection:AddToggle("HoldToggle", {
 })
 local HoldKey = HoldToggle:AddKeyPicker("HoldToggleKey", {
     Text = "Hold Keybind",
-    Default = ExampleKeyDefaults.HoldToggleKey.Key,
-    DefaultModifiers = ExampleKeyDefaults.HoldToggleKey.Modifiers,
-    Mode = ExampleKeyDefaults.HoldToggleKey.Mode,
+    Default = "MB2",
+    Mode = "Hold",
     SyncToggleState = true,
 })
 HoldKey:OnChanged(function(KeyCode, Modifiers)
@@ -893,9 +883,9 @@ end)
 local PressLabel = KeySection:AddLabel("Modifier Combo (Ctrl+Shift, Press mode)")
 PressLabel:AddKeyPicker("PressKey", {
     Text = "Ctrl+Shift Combo",
-    Default = ExampleKeyDefaults.PressKey.Key,
-    DefaultModifiers = ExampleKeyDefaults.PressKey.Modifiers,
-    Mode = ExampleKeyDefaults.PressKey.Mode,
+    Default = "F3",
+    DefaultModifiers = { "LCtrl", "LShift" },
+    Mode = "Press",
     Callback = function(State)
         print("[Callback] PressKey fired, state:", State)
     end,
@@ -1664,6 +1654,8 @@ ThemeManager:ApplyToTab(SettingsTab)
 -- loads the config and shows the window automatically once this script
 -- finishes running (AutoShow = false above is what keeps the window hidden
 -- until then) -- no separate SaveManager:Init(Window) call needed.
+-- BuildConfigSection now uses ResetToDefaults() when a config is missing/deleted.
+-- KeyPicker defaults are therefore recreated from DefaultKey/DefaultMode/DefaultModifiers.
 SaveManager:BuildConfigSection(SettingsTab)
 
 -- Notify is safe to queue up before the window is shown -- it's stored and

@@ -3226,16 +3226,11 @@ do
         local ParentObj = self
         local ToggleLabel = ParentObj.TextLabel
 
-        -- Keep the script-declared defaults as the authoritative initial value.
-        -- Do not alias DefaultModifiers: callers may reuse/mutate their table.
-        local DeclaredDefaultKey = Info.Default or "None"
-        local DeclaredDefaultModifiers = table.clone(Info.DefaultModifiers or {})
-
         local KeyPicker = {
             Text = Info.Text,
-            Value = DeclaredDefaultKey,
-            Modifiers = DeclaredDefaultModifiers,
-            DisplayValue = DeclaredDefaultKey,
+            Value = Info.Default,
+            Modifiers = Info.DefaultModifiers,
+            DisplayValue = Info.Default,
 
             Blacklisted = Info.Blacklisted,
             BlacklistedModifiers = Info.BlacklistedModifiers,
@@ -3736,9 +3731,9 @@ do
         -- initial raw fields above. SaveManager may subsequently replace it
         -- with a saved value, which is the intended persistence behavior.
         KeyPicker:SetValue({
-            Key = DeclaredDefaultKey,
+            Key = Info.Default,
             Mode = Info.Mode,
-            Modifiers = DeclaredDefaultModifiers,
+            Modifiers = Info.DefaultModifiers,
         })
 
         function KeyPicker:SetText(Text)
@@ -3953,8 +3948,14 @@ do
             table.insert(ParentObj.Addons, KeyPicker)
         end
 
-        KeyPicker.Default = DeclaredDefaultKey
-        KeyPicker.DefaultModifiers = table.clone(DeclaredDefaultModifiers)
+        -- Preserve the script-declared defaults separately from the live value.
+        -- SaveManager must use these when creating/resetting a fresh config;
+        -- KeyPicker.Value can legitimately become "None" after a config load,
+        -- so using the live value as the default is unsafe.
+        KeyPicker.DefaultKey = Info.Default or "None"
+        KeyPicker.DefaultModifiers = table.clone(Info.DefaultModifiers or {})
+        KeyPicker.DefaultMode = Info.Mode
+        KeyPicker.Default = KeyPicker.DefaultKey
 
         Options[Idx] = KeyPicker
 
