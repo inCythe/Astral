@@ -2116,6 +2116,25 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Library.Overlays[Id] = Table
     table.insert(Library.OverlaysOrder, Table)
 
+    -- Give every overlay its own ZIndex band. Previously every overlay root
+    -- used the same OverlayZIndex (1500), which meant the text/content of
+    -- different overlays all ended up on the same ZIndex and could visually
+    -- overlap/clip each other when the overlays stacked.
+    --
+    -- Each overlay gets one base layer, then NormalizeOverlayZIndex gives its
+    -- descendants +1 per level:
+    --   overlay frame = base
+    --   direct content = base + 1
+    --   nested content = base + 2
+    --
+    -- Keep the band close to OverlayZIndex so this does not interfere with
+    -- the library's other major UI layers.
+    local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
+    if Root and Root:IsA("GuiObject") then
+        Root.ZIndex = Library.OverlayZIndex + Id
+        NormalizeOverlayZIndex(Root)
+    end
+
     return Table
 end
 
