@@ -2510,12 +2510,21 @@ function Library:AddDraggableMenu(Name: string)
     -- to be AutomaticSize.X, so AbsoluteSize.X reflects its natural width)
     -- and grows/shrinks Holder to fit it, clamped between the title-derived
     -- ResolvedWidth and MaxWidth.
+    --
+    -- IMPORTANT: Holder has a UIScale on it (see NewTrackedScale below), so
+    -- Child.AbsoluteSize is already in SCREEN space (post-UIScale). Holder.Size
+    -- is logical/BASE space (pre-UIScale). We must divide by the current scale
+    -- factor before writing the measured width back into Holder.Size, or the
+    -- UIScale will be applied to it a second time.
     local ResizeQueued = false
     local function RecalculateWidth()
+        local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
+
         local WidestChildWidth = 0
         for _, Child in ipairs(Container:GetChildren()) do
             if Child:IsA("GuiObject") and Child.Visible then
-                WidestChildWidth = math.max(WidestChildWidth, Child.AbsoluteSize.X)
+                local LogicalWidth = Child.AbsoluteSize.X / ScaleFactor
+                WidestChildWidth = math.max(WidestChildWidth, LogicalWidth)
             end
         end
 
@@ -11756,10 +11765,16 @@ function Library:CreateWindow(WindowInfo)
 
         local function CreateBubble()
             local BubbleSizeInfo = WindowInfo.BubbleSize
-            local Width, Height = BubbleSizeInfo.X.Offset, BubbleSizeInfo.Y.Offset
-            local Margin = WindowInfo.BubbleMargin
+            local BaseWidth, BaseHeight = BubbleSizeInfo.X.Offset, BubbleSizeInfo.Y.Offset
+            local BaseMargin = WindowInfo.BubbleMargin
             local Padding = WindowInfo.BubblePadding
             local StartSide = (WindowInfo.BubbleSide == "Left") and "Left" or "Right"
+
+            -- Bubble carries its own UIScale (below), so Position/Size offsets
+            -- here are logical/BASE space. Bubble.AbsolutePosition and
+            -- ScreenGui.AbsoluteSize, used later for drag-snap clamping, are
+            -- SCREEN space -- any math mixing the two must convert first.
+            local Width, Height, Margin = BaseWidth, BaseHeight, BaseMargin
 
             local Bubble = New("TextButton", {
                 AutoButtonColor = false,
@@ -11826,8 +11841,18 @@ function Library:CreateWindow(WindowInfo)
 
             local function SnapToSide(ToSide: string)
                 local ScreenSize = ScreenGui.AbsoluteSize
+                local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
+
+                -- Bubble.AbsolutePosition/ScreenGui.AbsoluteSize are SCREEN
+                -- space (post-UIScale). Margin/Height/Width and the TargetPos
+                -- we tween to are logical/BASE space (pre-UIScale, since
+                -- Bubble.Position is written as base-space offsets). Convert
+                -- the measured Y back to base space before clamping/using it.
+                local LogicalY = Bubble.AbsolutePosition.Y / ScaleFactor
+                local LogicalScreenHeight = ScreenSize.Y / ScaleFactor
+
                 local ClampedY =
-                    math.clamp(Bubble.AbsolutePosition.Y, Margin, math.max(Margin, ScreenSize.Y - Height - Margin))
+                    math.clamp(LogicalY, Margin, math.max(Margin, LogicalScreenHeight - Height - Margin))
 
                 local TargetPos
                 if ToSide == "Right" then
@@ -11867,7 +11892,7 @@ function Library:CreateWindow(WindowInfo)
 
                     if Moved then
                         local ScreenSize = ScreenGui.AbsoluteSize
-                        local CenterX = Bubble.AbsolutePosition.X + (Width / 2)
+                        local CenterX = Bubble.AbsolutePosition.X + (Bubble.AbsoluteSize.X / 2)
                         SnapToSide(CenterX < (ScreenSize.X / 2) and "Left" or "Right")
                     else
                         Library:Toggle()
