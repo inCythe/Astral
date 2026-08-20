@@ -11987,6 +11987,14 @@ function Library:CreateWindow(WindowInfo)
                 if Library.Bubble then
                     Library.Bubble.Visible = true
                 else
+                    -- Same as the initial creation path: make sure DPIScale
+                    -- reflects the current viewport before the bubble's
+                    -- initial position gets baked from it.
+                    if Library.AutoDPIScale then
+                        Library.BaseScale = Library:CalculateAutoBaseScale()
+                    end
+                    Library:SetDPIScale(Library.UIScaleValue or 5)
+
                     CreateBubble()
                 end
             else
@@ -12004,6 +12012,19 @@ function Library:CreateWindow(WindowInfo)
         end
 
         if BubbleEnabled then
+            -- MakeWindow's initial DPI setup above applies a rough first-pass
+            -- scale immediately, then defers a more accurate recalculation to
+            -- a later frame (task.defer, once Roblox has actually laid out
+            -- the frame). If the bubble is created before that recalculation
+            -- lands, its initial Position gets baked from the rough scale
+            -- and visibly pops/jumps once the real scale applies. Re-settle
+            -- DPI scale synchronously right here, immediately before
+            -- creating the bubble, so it always reads the final value.
+            if Library.AutoDPIScale then
+                Library.BaseScale = Library:CalculateAutoBaseScale()
+            end
+            Library:SetDPIScale(Library.UIScaleValue or 5)
+
             CreateBubble()
         end
     end
