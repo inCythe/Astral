@@ -1534,6 +1534,31 @@ local function New(ClassName: string, Properties: { [string]: any }): any
     return inst
 end
 
+-- Overlay ZIndex hierarchy: every GuiObject child sits exactly one layer
+-- above its GuiObject parent. This prevents overlay frames/content from
+-- jumping by large amounts and keeps the hierarchy predictable.
+local function NormalizeOverlayZIndex(Root: Instance)
+    if not Root or not Root:IsA("GuiObject") then
+        return
+    end
+
+    local function Normalize(Parent: Instance)
+        local ParentZ = Parent:IsA("GuiObject") and Parent.ZIndex or nil
+        if ParentZ == nil then
+            return
+        end
+
+        for _, Child in ipairs(Parent:GetChildren()) do
+            if Child:IsA("GuiObject") then
+                Child.ZIndex = ParentZ + 1
+                Normalize(Child)
+            end
+        end
+    end
+
+    Normalize(Root)
+end
+
 function Library:NewTrackedScale(Parent: Instance, Offset: number?)
     local ScaleFactor = Library.DPIScale or 1
     local Scale = New("UIScale", {
@@ -2209,6 +2234,7 @@ function Library:AddDraggableLabel(Text: string)
         Label:Destroy()
     end
 
+    NormalizeOverlayZIndex(Label)
     Library:RegisterOverlay("DraggableLabel", Text, Table)
 
     return Table
@@ -2268,6 +2294,7 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
         Button:Destroy()
     end
 
+    NormalizeOverlayZIndex(Button)
     Library:RegisterOverlay("DraggableButton", Text, Table)
 
     return Table
@@ -2367,6 +2394,7 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
         Label.Text = NewText
     end
 
+    NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableToggle", Text, Table)
 
     return Table
@@ -2447,6 +2475,7 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
 
     Table.Holder = Holder
 
+    NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableProgress", Text, Table)
 
     return Table
@@ -2656,7 +2685,7 @@ function Library:AddDraggableMenu(Name: string)
     end)
     Container.ChildRemoved:Connect(QueueResize)
 
-    Container.ZIndex = BaseZIndex + 100
+    Container.ZIndex = BaseZIndex + 1
 
     local MenuCollapsed = false
     local function SetMenuCollapsed(Collapsed: boolean)
@@ -2701,6 +2730,7 @@ function Library:AddDraggableMenu(Name: string)
     end
     setmetatable(ContainerObj, BaseSection)
 
+    NormalizeOverlayZIndex(Holder)
     Library:RegisterOverlay("DraggableMenu", Name, ContainerObj)
 
     -- IMPORTANT: route the close button through ContainerObj:Remove() (which
@@ -2970,6 +3000,7 @@ function Library:AddContextMenu(
         end
 
         Menu.Visible = true
+        NormalizeOverlayZIndex(Menu)
 
         -- Guard against a stray leftover connection from a previous Open()
         -- call that never got cleaned up (see Close()/Remove() below).
