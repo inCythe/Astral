@@ -277,7 +277,32 @@ local Library = {
 
     Corners = {},
 
-    OverlayZIndex = 1500,
+    -- === ZIndex layering ===
+    -- Everything is stacked relative to one baseline instead of the old
+    -- scattered constants (window ~1, tooltip 20, bubble 500, overlays a
+    -- single shared 1500, cursor ~11000). BaseZIndex is the MINIMUM ZIndex
+    -- the main window uses; every other global layer is defined as an
+    -- offset from it, so the whole stack can be shifted together and the
+    -- ordering between layers is guaranteed instead of accidental.
+    --
+    -- Layer order (low to high): Window -> Bubble -> Tooltip -> Overlays -> Cursor.
+    BaseZIndex = 999,
+    BubbleZIndexOffset = 1,     -- floats above the window, below everything else
+    TooltipZIndexOffset = 3,    -- always above window/bubble content
+    OverlayZIndexOffset = 6,    -- where the overlay band starts
+    CursorZIndexOffset = 5006,  -- always on top, above a generous overlay budget
+
+    -- Size of the ZIndex band handed to each individual overlay. Overlays
+    -- used to all share the exact same Library.OverlayZIndex constant, so
+    -- the "frame" and its "content" were miles apart in ZIndex (relying on
+    -- +1/+100 offsets that didn't compose) while DIFFERENT overlays used
+    -- the identical ZIndex and fought each other for stacking order. Now
+    -- each overlay gets its own reserved band of this size: its root frame
+    -- sits at the bottom of the band and its content sits exactly 1 above
+    -- it, with the next overlay starting a full band later so overlays
+    -- never overlap each other.
+    OverlayZIndexSlotSize = 10,
+    OverlayZIndexCounter = 0,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -335,6 +360,17 @@ local Library = {
     ImageManager = CustomImageManager,
     ShowCursorBinding = string.sub(tostring({}), 10),
 }
+
+-- Derived ZIndex layers, computed from BaseZIndex/*Offset above. Kept as
+-- real fields (not recomputed inline everywhere) so any code that reads
+-- Library.OverlayZIndex/TooltipZIndex/BubbleZIndex/CursorZIndex sees a
+-- single source of truth, and so shifting BaseZIndex later only requires
+-- updating this one block.
+Library.TooltipZIndex = Library.BaseZIndex + Library.TooltipZIndexOffset
+Library.BubbleZIndex = Library.BaseZIndex + Library.BubbleZIndexOffset
+Library.OverlayZIndex = Library.BaseZIndex + Library.OverlayZIndexOffset
+Library.CursorZIndex = Library.BaseZIndex + Library.CursorZIndexOffset
+
 
 if RunService:IsStudio() then
     if UserInputService.TouchEnabled and not UserInputService.MouseEnabled then
@@ -1638,12 +1674,16 @@ local ModalElement = New("TextButton", {
 
 local Cursor, CursorCustomImage
 do
+    -- Cursor sits at the very top of the stack (Library.CursorZIndex),
+    -- always above tooltips/overlays/the window. Its own children (shadow
+    -- strokes under the crosshair lines) sit exactly 1 below that.
+    local CursorZIndex = Library.CursorZIndex
     Cursor = New("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         BackgroundColor3 = "WhiteColor",
         Size = UDim2.fromOffset(9, 1),
         Visible = false,
-        ZIndex = 11000,
+        ZIndex = CursorZIndex,
         Parent = ScreenGui,
     })
     New("Frame", {
@@ -1651,7 +1691,7 @@ do
         BackgroundColor3 = "DarkColor",
         Position = UDim2.fromScale(0.5, 0.5),
         Size = UDim2.new(1, 2, 1, 2),
-        ZIndex = 10999,
+        ZIndex = CursorZIndex - 1,
         Parent = Cursor,
     })
 
@@ -1660,7 +1700,7 @@ do
         BackgroundColor3 = "WhiteColor",
         Position = UDim2.fromScale(0.5, 0.5),
         Size = UDim2.fromOffset(1, 9),
-        ZIndex = 11000,
+        ZIndex = CursorZIndex,
         Parent = Cursor,
     })
     New("Frame", {
@@ -1668,7 +1708,7 @@ do
         BackgroundColor3 = "DarkColor",
         Position = UDim2.fromScale(0.5, 0.5),
         Size = UDim2.new(1, 2, 1, 2),
-        ZIndex = 10999,
+        ZIndex = CursorZIndex - 1,
         Parent = CursorV,
     })
 
@@ -1677,7 +1717,7 @@ do
         BackgroundTransparency = 1,
         Position = UDim2.fromScale(0.5, 0.5),
         Size = UDim2.fromOffset(20, 20),
-        ZIndex = 11000,
+        ZIndex = CursorZIndex,
         Visible = false,
         Parent = Cursor
     })
@@ -1691,6 +1731,11 @@ do
         BackgroundTransparency = 1,
         Position = UDim2.new(1, -6, 0, 6),
         Size = UDim2.new(0, 300, 1, -6),
+        -- Previously unset (defaulted to ZIndex 1), so notifications
+        -- silently rendered BEHIND the main window once MainFrame got an
+        -- explicit baseline ZIndex. Notifications should always be visible
+        -- above the window, so anchor them just above the tooltip layer.
+        ZIndex = Library.TooltipZIndex + 1,
         Parent = ScreenGui,
     })
     table.insert(
@@ -2023,6 +2068,20 @@ function Library:GetNextOverlayPosition(): UDim2
     return UDim2.fromOffset(Offset, Offset)
 end
 
+function Library:NextOverlayZIndex(): number
+    -- Hands each overlay its OWN reserved band instead of every overlay
+    -- sharing the single Library.OverlayZIndex constant. Call this once per
+    -- overlay, before building its instances, and use the returned value as
+    -- that overlay's local "BaseZIndex" (root frame = BaseZIndex, its
+    -- immediate content = BaseZIndex + 1, etc). The next overlay created
+    -- starts a full OverlayZIndexSlotSize later, so two overlays can never
+    -- land on the same ZIndex no matter how many layered children either
+    -- one has (as long as it stays within the slot size).
+    local Slot = Library.OverlayZIndexCounter
+    Library.OverlayZIndexCounter = Slot + 1
+    return Library.OverlayZIndex + (Slot * Library.OverlayZIndexSlotSize)
+end
+
 function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [any]: any })
     Library.OverlayIdCounter = Library.OverlayIdCounter + 1
     local Id = Library.OverlayIdCounter
@@ -2038,6 +2097,20 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
                 Root.Visible = Visible
             end
         end
+    end
+
+    -- Wrap whatever SetVisible ends up being (type-specific or the generic
+    -- fallback above): if something makes this overlay visible again after
+    -- a soft :Remove(), re-register it with the manager so GetOverlays() /
+    -- RemoveAllOverlays() / SetAllOverlaysVisible() see it again too,
+    -- instead of leaving it permanently untracked after the first removal.
+    local BaseSetVisible = Table.SetVisible
+    function Table:SetVisible(Visible: boolean)
+        if Visible and Library.Overlays[Id] ~= Table and not Table.__Destroyed then
+            Library.Overlays[Id] = Table
+            table.insert(Library.OverlaysOrder, Table)
+        end
+        return BaseSetVisible(Table, Visible)
     end
 
     if not Table.IsVisible then
@@ -2056,22 +2129,59 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         end
     end
 
+    -- BaseRemove is whatever type-specific teardown the overlay defined
+    -- (or the generic Root:Destroy() fallback above). We no longer call it
+    -- directly on a normal :Remove() -- see below.
     local BaseRemove = Table.Remove
-    local Removed = false
-    function Table:Remove()
-        -- Idempotent: guards against double-removal (e.g. a UI element's
-        -- Destroyed connection firing after :Remove() already ran), which
-        -- would otherwise re-run BaseRemove on already-destroyed instances
-        -- or corrupt Library.OverlaysOrder a second time.
-        if Removed then
-            return
-        end
-        Removed = true
 
+    -- "Soft remove": hides the overlay and detaches it from the manager's
+    -- bookkeeping (Overlays/OverlaysOrder, so GetOverlays/RemoveAllOverlays
+    -- won't see it again) WITHOUT destroying its underlying Instance. This
+    -- is what RemoveOverlay/RemoveAllOverlays use.
+    --
+    -- Previously :Remove() destroyed the root Instance outright. That's
+    -- fine for one-off overlays (draggable labels/buttons), but overlays
+    -- like context menus are handed out ONCE and held onto forever by
+    -- whatever widget created them (a dropdown, a color picker, ...), which
+    -- just calls :Open()/:Toggle() on the same table for the rest of the
+    -- widget's life. Destroying the Instance permanently bricked that
+    -- widget's popup with no way to get it back. Hiding instead of
+    -- destroying means the SAME :Open()/:Toggle()/:SetVisible(true) calls
+    -- the widget already makes will simply work again later.
+    function Table:Remove()
         if Library.Overlays[Id] == Table then
             Library.Overlays[Id] = nil
         end
 
+        for Index, Entry in Library.OverlaysOrder do
+            if Entry == Table then
+                table.remove(Library.OverlaysOrder, Index)
+                break
+            end
+        end
+
+        if Table.SetVisible then
+            pcall(Table.SetVisible, Table, false)
+        end
+    end
+
+    -- True, permanent destruction (Instance:Destroy() and friends). Only
+    -- the library's own Unload() path (or code that genuinely never wants
+    -- this overlay again) should call this -- everyday cleanup should use
+    -- :Remove() above instead.
+    function Table:Destroy()
+        if Table.__Destroyed then
+            return
+        end
+        Table.__Destroyed = true
+
+        if Table.Remove then
+            pcall(Table.Remove, Table)
+        end
+
+        if Library.Overlays[Id] == Table then
+            Library.Overlays[Id] = nil
+        end
         for Index, Entry in Library.OverlaysOrder do
             if Entry == Table then
                 table.remove(Library.OverlaysOrder, Index)
@@ -2146,6 +2256,7 @@ function Library:AddDraggableLabel(Text: string)
     local Table = {}
 
     local OwningScreenGui = ScreenGui
+    local BaseZIndex = Library:NextOverlayZIndex()
 
     local Label = New("TextLabel", {
         AutomaticSize = Enum.AutomaticSize.XY,
@@ -2154,7 +2265,7 @@ function Library:AddDraggableLabel(Text: string)
         Position = Library:GetNextOverlayPosition(),
         Text = Text,
         TextSize = 15,
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
     table.insert(
@@ -2212,12 +2323,13 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
     local Table = {}
 
     local OwningScreenGui = ScreenGui
+    local BaseZIndex = Library:NextOverlayZIndex()
 
     local Button = New("TextButton", {
         BackgroundColor3 = "BackgroundColor",
         Position = Library:GetNextOverlayPosition(),
         TextSize = 16,
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
     table.insert(
@@ -2270,13 +2382,14 @@ end
 function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
     local Table = {}
     local OwningScreenGui = ScreenGui
+    local BaseZIndex = Library:NextOverlayZIndex()
 
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = "BackgroundColor",
         Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(0, 0),
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
     table.insert(
@@ -2307,7 +2420,7 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
         BackgroundTransparency = 1,
         Text = Text,
         TextSize = 15,
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex + 1,
         Parent = Holder,
     })
 
@@ -2315,7 +2428,7 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
         BackgroundColor3 = "MainColor",
         Size = UDim2.fromOffset(34, 18),
         Text = "",
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex + 1,
         Parent = Holder,
     })
     table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = Switch }))
@@ -2326,7 +2439,7 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
         BackgroundColor3 = "FontColor",
         Position = UDim2.new(0, 2, 0.5, 0),
         Size = UDim2.fromOffset(14, 14),
-        ZIndex = Library.OverlayZIndex + 1,
+        ZIndex = BaseZIndex + 2,
         Parent = Switch,
     })
     table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = Dot }))
@@ -2369,12 +2482,13 @@ end
 function Library:AddDraggableProgress(Text: string, Default: number?, Max: number?)
     local Table = {}
     local OwningScreenGui = ScreenGui
+    local BaseZIndex = Library:NextOverlayZIndex()
 
     local Holder = New("Frame", {
         BackgroundColor3 = "BackgroundColor",
         Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(180, 44),
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
     table.insert(
@@ -2400,7 +2514,7 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
         Text = Text,
         TextSize = 13,
         TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex + 1,
         Parent = Holder,
     })
 
@@ -2408,7 +2522,7 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
         BackgroundColor3 = "MainColor",
         Position = UDim2.new(0, 0, 1, -10),
         Size = UDim2.new(1, 0, 0, 10),
-        ZIndex = Library.OverlayZIndex,
+        ZIndex = BaseZIndex + 1,
         Parent = Holder,
     })
     table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = Track }))
@@ -2417,7 +2531,7 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
     local Fill = New("Frame", {
         BackgroundColor3 = "AccentColor",
         Size = UDim2.fromScale(0, 1),
-        ZIndex = Library.OverlayZIndex + 1,
+        ZIndex = BaseZIndex + 2,
         Parent = Track,
     })
     table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = Fill }))
@@ -2453,7 +2567,17 @@ function Library:AddDraggableMenu(Name: string)
     local OwningScreenGui = ScreenGui
 
     local MenuWidth = 220
-    local BaseZIndex = Library.OverlayZIndex
+    -- Own reserved band (see NextOverlayZIndex) instead of the old shared
+    -- Library.OverlayZIndex constant, so this menu can't collide with any
+    -- other overlay. Within the band: Holder (root) = BaseZIndex, all
+    -- title-bar chrome = BaseZIndex + 1, and the scrollable Container (plus
+    -- whatever content gets dropped into it, which inherits ZIndex from
+    -- Container automatically via New()) = BaseZIndex + 2. That replaces
+    -- the old "Container.ZIndex = BaseZIndex + 100" arbitrary jump with a
+    -- single, tight gap.
+    local BaseZIndex = Library:NextOverlayZIndex()
+    local ChromeZIndex = BaseZIndex + 1
+    local ContainerZIndex = BaseZIndex + 2
 
     local ControlsWidth = 62
     local TitleTextWidth = select(1, Library:GetTextBounds(Name, Library.Scheme.Font, 15))
@@ -2495,7 +2619,7 @@ function Library:AddDraggableMenu(Name: string)
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 34),
         LayoutOrder = 1,
-        ZIndex = BaseZIndex,
+        ZIndex = ChromeZIndex,
         Parent = Holder,
     })
 
@@ -2506,7 +2630,6 @@ function Library:AddDraggableMenu(Name: string)
         TextSize = 15,
         TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = BaseZIndex,
         Parent = LabelHolder,
     })
     New("UIPadding", {
@@ -2520,7 +2643,6 @@ function Library:AddDraggableMenu(Name: string)
         BackgroundTransparency = 1,
         Position = UDim2.new(1, -8, 0.5, 0),
         Size = UDim2.fromOffset(46, 20),
-        ZIndex = BaseZIndex,
         Parent = LabelHolder,
     })
     New("UIListLayout", {
@@ -2536,7 +2658,6 @@ function Library:AddDraggableMenu(Name: string)
             BackgroundColor3 = "MainColor",
             Size = UDim2.fromOffset(20, 20),
             Text = "",
-            ZIndex = BaseZIndex,
             Parent = ControlsHolder,
         })
         table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(0, 5), Parent = Btn }))
@@ -2548,7 +2669,6 @@ function Library:AddDraggableMenu(Name: string)
             ImageTransparency = 0.35,
             Position = UDim2.fromScale(0.5, 0.5),
             Size = UDim2.fromOffset(11, 11),
-            ZIndex = BaseZIndex,
             Parent = Btn,
         })
 
@@ -2582,7 +2702,7 @@ function Library:AddDraggableMenu(Name: string)
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 0),
         LayoutOrder = 2,
-        ZIndex = BaseZIndex,
+        ZIndex = ContainerZIndex,
         Parent = Holder,
     })
     New("UIListLayout", {
@@ -2650,7 +2770,9 @@ function Library:AddDraggableMenu(Name: string)
     end)
     Container.ChildRemoved:Connect(QueueResize)
 
-    Container.ZIndex = BaseZIndex + 100
+    -- ZIndex is already set to ContainerZIndex at creation time above; no
+    -- need to re-stamp it here (previously this overwrote it with the
+    -- arbitrary BaseZIndex + 100 jump).
 
     local MenuCollapsed = false
     local function SetMenuCollapsed(Collapsed: boolean)
@@ -2721,6 +2843,12 @@ function Library:AddContextMenu(
 )
     local Menu
 
+    -- Own reserved band, same as every other overlay type -- guarantees
+    -- this context menu can't land on the same ZIndex as another context
+    -- menu, a draggable label/button/toggle/progress/menu, etc, no matter
+    -- how many of each are alive at once.
+    local BaseZIndex = Library:NextOverlayZIndex()
+
     -- Parent the menu under the SAME scaled container Holder lives in
     -- (normally MainFrame, or the Loading screen's frame) rather than at
     -- the ScreenGui root with its own separate UIScale. This mirrors the
@@ -2748,7 +2876,7 @@ function Library:AddContextMenu(
             Size = typeof(Size) == "function" and Size() or Size,
             TopImage = "rbxasset://textures/ui/Scroll/scroll-middle.png",
             Visible = false,
-            ZIndex = Library.OverlayZIndex,
+            ZIndex = BaseZIndex,
             Parent = ParentGui,
         })
     else
@@ -2756,7 +2884,7 @@ function Library:AddContextMenu(
             BackgroundColor3 = "BackgroundColor",
             Size = typeof(Size) == "function" and Size() or Size,
             Visible = false,
-            ZIndex = Library.OverlayZIndex,
+            ZIndex = BaseZIndex,
             Parent = ParentGui,
         })
     end
@@ -2840,6 +2968,18 @@ function Library:AddContextMenu(
             return
         elseif CurrentMenu then
             CurrentMenu:Close()
+        end
+
+        -- If this menu was soft-removed (RemoveOverlay/RemoveAllOverlays)
+        -- since it was created, it's no longer tracked in
+        -- Library.Overlays/OverlaysOrder. Re-register it here so
+        -- GetOverlays/RemoveAllOverlays/SetAllOverlaysVisible see it again
+        -- instead of it staying permanently untracked after the first
+        -- removal, even though (per the fix above) it's still perfectly
+        -- capable of opening.
+        if Table.Id and Library.Overlays[Table.Id] ~= Table then
+            Library.Overlays[Table.Id] = Table
+            table.insert(Library.OverlaysOrder, Table)
         end
 
         CurrentMenu = Table
@@ -2972,7 +3112,7 @@ local TooltipLabel = New("TextLabel", {
     TextSize = 14,
     TextWrapped = true,
     Visible = false,
-    ZIndex = 20,
+    ZIndex = Library.TooltipZIndex,
     Parent = ScreenGui,
 })
 New("UIPadding", {
@@ -8311,7 +8451,10 @@ function Library:Notify(...)
         BackgroundColor3 = "MainColor",
         Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -8, 0, -2) or UDim2.new(1, 8, 0, -2),
         Size = UDim2.fromScale(1, 1),
-        ZIndex = 5,
+        -- Relative to FakeBackground's (inherited) ZIndex instead of a
+        -- standalone absolute value, so it always stays correctly stacked
+        -- above NotificationArea regardless of where that root sits.
+        ZIndex = FakeBackground.ZIndex + 1,
         Parent = FakeBackground,
     })
     table.insert(
@@ -8701,6 +8844,10 @@ function Library:CreateWindow(WindowInfo)
             Position = WindowInfo.Position,
             Size = WindowInfo.Size,
             Visible = false,
+            -- Explicit baseline so the window is guaranteed to sit at (or
+            -- above) Library.BaseZIndex regardless of Instance creation
+            -- order, instead of silently defaulting to ZIndex 1.
+            ZIndex = Library.BaseZIndex,
             Parent = ScreenGui,
         })
         table.insert(
@@ -8788,7 +8935,12 @@ function Library:CreateWindow(WindowInfo)
                 Position = UDim2.fromScale(0, 0),
                 Size = UDim2.fromScale(1, 1),
                 ScaleType = Enum.ScaleType.Stretch,
-                ZIndex = 999,
+                -- Sit just above MainFrame's own background instead of a
+                -- hardcoded absolute ZIndex -- previously this happened to
+                -- be 999, which is now Library.BaseZIndex (MainFrame's own
+                -- ZIndex), so a literal 999 here would collide with the
+                -- window itself under ZIndexBehavior.Global.
+                ZIndex = MainFrame.ZIndex + 1,
                 BackgroundTransparency = 1,
                 ImageTransparency = 0.75,
                 Parent = MainFrame,
@@ -12072,7 +12224,7 @@ function Library:CreateWindow(WindowInfo)
                     StartSide == "Right" and -RenderedWidth or 0,
                     0.5, -RenderedHeight / 2
                 ),
-                ZIndex = 500,
+                ZIndex = Library.BubbleZIndex,
                 Parent = ScreenGui,
             })
             Library:AddToRegistry(Bubble, { BackgroundColor3 = WindowInfo.BubbleColor or "MainColor" })
@@ -12117,7 +12269,7 @@ function Library:CreateWindow(WindowInfo)
                     ImageRectSize = CustomIcon.ImageRectSize,
                     Position = UDim2.fromScale(0.5, 0.5),
                     Size = IconSize,
-                    ZIndex = 501,
+                    ZIndex = Library.BubbleZIndex + 1,
                     Parent = Bubble,
                 })
                 Library:AddToRegistry(BubbleIcon, { ImageColor3 = WindowInfo.BubbleIconColor or "AccentColor" })
@@ -12130,7 +12282,7 @@ function Library:CreateWindow(WindowInfo)
                     Text = WindowInfo.Title:sub(1, 1),
                     TextColor3 = WindowInfo.BubbleIconColor or "AccentColor",
                     TextScaled = true,
-                    ZIndex = 501,
+                    ZIndex = Library.BubbleZIndex + 1,
                     Parent = Bubble,
                 })
                 Library:AddToRegistry(BubbleLabel, { TextColor3 = WindowInfo.BubbleIconColor or "AccentColor" })
