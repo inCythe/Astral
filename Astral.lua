@@ -285,15 +285,26 @@ local Library = {
     -- offset from it, so the whole stack can be shifted together and the
     -- ordering between layers is guaranteed instead of accidental.
     --
-    -- Layer order (low to high): Window -> Bubble -> Tooltip -> Overlays ->
-    -- SearchOverlay -> Dialog -> Cursor. Every layer is a SMALL offset from
-    -- BaseZIndex (tens/hundreds, not thousands) so the whole stack stays in
-    -- a tight, readable band instead of sprawling up into the 12000-13000
-    -- range. Nothing here needs to be that high: ZIndex only has to beat
-    -- its siblings, not hit some arbitrary "big enough" number.
+    -- Layer order (low to high): Window -> Bubble -> Tooltip -> DialogScrim
+    -- -> Overlays -> SearchOverlay -> DialogContent -> Cursor. Every layer
+    -- is a SMALL offset from BaseZIndex (tens/hundreds, not thousands) so
+    -- the whole stack stays in a tight, readable band instead of sprawling
+    -- up into the 12000-13000 range. Nothing here needs to be that high:
+    -- ZIndex only has to beat its siblings, not hit some arbitrary
+    -- "big enough" number.
+    --
+    -- DialogScrim/DialogContent are split into two separate layers on
+    -- purpose (not one "Dialog" band): the scrim is only a dimming
+    -- backdrop, so it sits BELOW the overlay band -- meaning any
+    -- already-open overlay (a draggable menu, the Keybinds panel, a
+    -- context menu) stays visibly undimmed and clickable while a dialog
+    -- is open, instead of getting darkened and blocked by the scrim.
+    -- DialogContent (the actual modal box) still sits above the overlay
+    -- band, because the dialog itself must stay usable/topmost while open.
     BaseZIndex = 999,
     BubbleZIndexOffset = 1,       -- floats above the window, below everything else
     TooltipZIndexOffset = 3,      -- always above window/bubble content
+    DialogScrimZIndexOffset = 5,  -- dark dimming backdrop, BELOW overlays
     OverlayZIndexOffset = 6,      -- where the overlay band starts
 
     -- Size of the ZIndex band handed to each individual overlay. Overlays
@@ -309,14 +320,21 @@ local Library = {
     OverlayZIndexSlotSize = 4,
     OverlayZIndexCounter = 0,
 
+    -- Increments every time ANY overlay is brought to front (see
+    -- BringOverlayToFront). Whichever overlay most recently captured this
+    -- value is the current frontmost overlay -- used to skip redundant
+    -- ZIndex reassignment when something already-frontmost is clicked or
+    -- dragged again.
+    OverlayFrontGeneration = 0,
+
     -- How many overlay slots to budget for before the next named layer
     -- (SearchOverlay) starts. 40 slots * 4 per slot = 160 -- comfortably
     -- more concurrent overlays than the UI can ever actually have open at
     -- once, while still keeping the numbers close together.
     OverlayZIndexBudget = 40,
-    SearchOverlayZIndexOffset = nil, -- computed below, after OverlayZIndexBudget
-    DialogZIndexOffset = nil,        -- computed below, after SearchOverlay's band
-    CursorZIndexOffset = nil,        -- computed below, always the topmost layer
+    SearchOverlayZIndexOffset = nil,  -- computed below, after OverlayZIndexBudget
+    DialogContentZIndexOffset = nil, -- computed below, after SearchOverlay's band
+    CursorZIndexOffset = nil,         -- computed below, always the topmost layer
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -378,13 +396,19 @@ local Library = {
 -- Derived ZIndex layers, computed from BaseZIndex/*Offset above. Kept as
 -- real fields (not recomputed inline everywhere) so any code that reads
 -- Library.OverlayZIndex/TooltipZIndex/BubbleZIndex/SearchOverlayZIndex/
--- DialogZIndex/CursorZIndex sees a single source of truth, and so shifting
--- BaseZIndex later only requires updating this one block. Each layer is
--- derived from the END of the previous one (not a big fixed jump), which
--- is what keeps the whole stack packed into a tight, close-together range
--- instead of drifting up into the thousands.
+-- DialogScrimZIndex/DialogContentZIndex/CursorZIndex sees a single source
+-- of truth, and so shifting BaseZIndex later only requires updating this
+-- one block. Each layer is derived from the END of the previous one (not
+-- a big fixed jump), which is what keeps the whole stack packed into a
+-- tight, close-together range instead of drifting up into the thousands.
 Library.TooltipZIndex = Library.BaseZIndex + Library.TooltipZIndexOffset
 Library.BubbleZIndex = Library.BaseZIndex + Library.BubbleZIndexOffset
+
+-- DialogScrim sits between Tooltip and the overlay band -- above normal
+-- window content (so it visibly dims the window behind a dialog) but
+-- BELOW every overlay, so overlays stay undimmed/interactive on top of it.
+Library.DialogScrimZIndex = Library.BaseZIndex + Library.DialogScrimZIndexOffset
+
 Library.OverlayZIndex = Library.BaseZIndex + Library.OverlayZIndexOffset
 
 -- End of the overlay band: the last ZIndex any single overlay could ever
@@ -399,16 +423,20 @@ Library.SearchOverlayZIndexOffset = OverlayBandEnd - Library.BaseZIndex
 Library.SearchOverlayZIndex = Library.BaseZIndex + Library.SearchOverlayZIndexOffset
 local SearchOverlayBandEnd = Library.SearchOverlayZIndex + 2
 
--- Dialog (Window:AddDialog's modal) sits above SearchOverlay -- it's a
--- true modal and must beat everything else in the window while open.
--- It uses a handful of internal levels (overlay scrim, frame, content,
--- footer buttons), so it gets a small reserved band, not a single ZIndex.
-Library.DialogZIndexOffset = (SearchOverlayBandEnd - Library.BaseZIndex)
-Library.DialogZIndex = Library.BaseZIndex + Library.DialogZIndexOffset
-local DialogBandEnd = Library.DialogZIndex + 4
+-- DialogContent (the dialog's actual box: frame, header, body, footer
+-- buttons) sits above SearchOverlay and the entire overlay band -- it's a
+-- true modal and must stay usable/topmost while open, even though its own
+-- dimming scrim (DialogScrimZIndex, above) sits UNDER the overlay band.
+Library.DialogContentZIndexOffset = (SearchOverlayBandEnd - Library.BaseZIndex)
+Library.DialogContentZIndex = Library.BaseZIndex + Library.DialogContentZIndexOffset
+local DialogContentBandEnd = Library.DialogContentZIndex + 4
 
--- Cursor is always the topmost layer, directly after Dialog's band ends.
-Library.CursorZIndexOffset = (DialogBandEnd - Library.BaseZIndex) + 2
+-- Backwards-compatible alias: existing code/comments referring to
+-- "Library.DialogZIndex" mean the dialog's content band specifically.
+Library.DialogZIndex = Library.DialogContentZIndex
+
+-- Cursor is always the topmost layer, directly after DialogContent's band ends.
+Library.CursorZIndexOffset = (DialogContentBandEnd - Library.BaseZIndex) + 2
 Library.CursorZIndex = Library.BaseZIndex + Library.CursorZIndexOffset
 
 
@@ -2125,9 +2153,61 @@ function Library:NextOverlayZIndex(): number
     -- starts a full OverlayZIndexSlotSize later, so two overlays can never
     -- land on the same ZIndex no matter how many layered children either
     -- one has (as long as it stays within the slot size).
-    local Slot = Library.OverlayZIndexCounter
-    Library.OverlayZIndexCounter = Slot + 1
+    --
+    -- Wraps back to slot 0 once OverlayZIndexBudget is exhausted, instead
+    -- of counting up forever. BringOverlayToFront (below) can call this
+    -- repeatedly over a long session (bringing overlays to front on every
+    -- show/drag), so without a wraparound the counter would eventually
+    -- exceed the reserved band and collide with SearchOverlay/Dialog.
+    -- Wrapping is safe here: once slot 0 is handed out again, that overlay
+    -- simply becomes the new "oldest" and everything else still stacks
+    -- correctly above it, exactly like a real window manager's Z-order.
+    local Slot = Library.OverlayZIndexCounter % Library.OverlayZIndexBudget
+    Library.OverlayZIndexCounter += 1
     return Library.OverlayZIndex + (Slot * Library.OverlayZIndexSlotSize)
+end
+
+function Library:BringOverlayToFront(RootInstance: GuiObject, OldBaseZIndex: number, OldFrontGeneration: number?)
+    -- Overlays get a permanent ZIndex band at CREATION time (see
+    -- NextOverlayZIndex). That's fine for stacking order between overlays
+    -- that never interact, but it means an overlay created early (like the
+    -- Keybinds panel, built once during CreateWindow before any user
+    -- overlay exists) is PERMANENTLY stuck at the bottom of the overlay
+    -- band -- every overlay spawned afterward visually sits on top of it
+    -- forever, even if the early one is the one currently being shown or
+    -- dragged. That reads as "it's not really an overlay", since real
+    -- overlays are expected to come to front on interaction.
+    --
+    -- This reassigns RootInstance's entire band to a FRESH slot at the
+    -- current top of the overlay band, shifting every descendant by the
+    -- same delta so their relative order within the overlay is preserved.
+    -- Call this whenever an overlay should visually come to front: when
+    -- it's shown, and/or when the user starts dragging it.
+    --
+    -- Already-frontmost check: Library.OverlayFrontGeneration increments
+    -- every time ANY overlay is brought to front, and the current holder
+    -- of the highest generation is already visually frontmost. Skipping
+    -- the reassignment in that case means repeatedly clicking/dragging the
+    -- SAME already-frontmost overlay doesn't keep burning fresh slots (and
+    -- fresh calls to NextOverlayZIndex) for no visual change.
+    if OldFrontGeneration ~= nil and OldFrontGeneration == Library.OverlayFrontGeneration then
+        return OldBaseZIndex, OldFrontGeneration
+    end
+
+    local NewBaseZIndex = Library:NextOverlayZIndex()
+    local Delta = NewBaseZIndex - OldBaseZIndex
+
+    if Delta ~= 0 then
+        RootInstance.ZIndex += Delta
+        for _, Descendant in RootInstance:GetDescendants() do
+            if Descendant:IsA("GuiObject") then
+                Descendant.ZIndex += Delta
+            end
+        end
+    end
+
+    Library.OverlayFrontGeneration += 1
+    return NewBaseZIndex, Library.OverlayFrontGeneration
 end
 
 function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [any]: any })
@@ -2627,6 +2707,11 @@ function Library:AddDraggableMenu(Name: string)
     local ChromeZIndex = BaseZIndex + 1
     local ContainerZIndex = BaseZIndex + 2
 
+    -- Tracks whether this specific menu is the current frontmost overlay
+    -- (see BringOverlayToFront) so repeated clicks/drags/shows on an
+    -- already-frontmost menu don't keep burning fresh ZIndex slots.
+    local FrontGeneration: number? = nil
+
     local ControlsWidth = 62
     local TitleTextWidth = select(1, Library:GetTextBounds(Name, Library.Scheme.Font, 15))
     local ResolvedWidth = math.max(MenuWidth, math.ceil(TitleTextWidth) + 12 + ControlsWidth)
@@ -2835,6 +2920,19 @@ function Library:AddDraggableMenu(Name: string)
 
     Library:MakeDraggable(Holder, LabelHolder, true)
 
+    -- Bring this menu to the front of the overlay stack whenever the user
+    -- starts interacting with its title bar (drag or click) -- otherwise
+    -- an early-created menu (e.g. the Keybinds panel, built once during
+    -- CreateWindow) would be permanently stuck under every overlay created
+    -- afterward, unable to ever visually come to front like a normal
+    -- overlay is expected to.
+    LabelHolder.InputBegan:Connect(function(Input: InputObject)
+        if not IsClickInput(Input) then
+            return
+        end
+        BaseZIndex, FrontGeneration = Library:BringOverlayToFront(Holder, BaseZIndex, FrontGeneration)
+    end)
+
     local ContainerObj = {
         Holder = Holder,
         Container = Container,
@@ -2859,6 +2957,12 @@ function Library:AddDraggableMenu(Name: string)
             return
         end
         Holder.Visible = Visible
+        if Visible then
+            -- Also bring to front on show, not just on drag/click, so
+            -- re-opening a menu (e.g. toggling the Keybinds panel back on)
+            -- reliably surfaces it above whatever else is currently open.
+            BaseZIndex, FrontGeneration = Library:BringOverlayToFront(Holder, BaseZIndex, FrontGeneration)
+        end
     end
     function ContainerObj:IsVisible(): boolean
         return Holder.Parent ~= nil and Holder.Visible
@@ -11593,7 +11697,13 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 1),
             Text = "",
             Active = false,
-            ZIndex = Library.DialogZIndex,
+            -- The scrim is intentionally on a LOWER layer than the overlay
+            -- band (Library.DialogScrimZIndex, not DialogContentZIndex):
+            -- it's only a dimming backdrop for the window's own content, so
+            -- any already-open overlay (draggable menus, the Keybinds
+            -- panel, context menus) should stay visibly undimmed and
+            -- interactive above it rather than getting darkened/blocked.
+            ZIndex = Library.DialogScrimZIndex,
             Visible = true,
             Parent = MainFrame,
         })
@@ -11609,7 +11719,11 @@ function Library:CreateWindow(WindowInfo)
             AutomaticSize = Enum.AutomaticSize.Y,
             Text = "",
             AutoButtonColor = false,
-            ZIndex = Library.DialogZIndex + 1,
+            -- The dialog's actual content box, unlike its scrim above,
+            -- stays on the TOP layer (DialogContentZIndex, above the
+            -- overlay band) since the dialog itself must remain usable
+            -- while open.
+            ZIndex = Library.DialogContentZIndex + 1,
             Parent = DialogOverlay,
         })
         table.insert(
@@ -11625,7 +11739,7 @@ function Library:CreateWindow(WindowInfo)
             BackgroundTransparency = 1,
             Size = UDim2.fromScale(1, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = DialogFrame,
         })
         local DialogScale = New("UIScale", {
@@ -11653,7 +11767,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 1,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = InnerContainer,
         })
         New("UIListLayout", {
@@ -11671,7 +11785,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(1, 0, 0, 20),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 1,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = HeaderContainer,
         })
         New("UIListLayout", {
@@ -11693,7 +11807,7 @@ function Library:CreateWindow(WindowInfo)
                     ImageRectOffset = ParsedIcon.ImageRectOffset,
                     ImageRectSize = ParsedIcon.ImageRectSize,
                     LayoutOrder = 1,
-                    ZIndex = Library.DialogZIndex + 2,
+                    ZIndex = Library.DialogContentZIndex + 2,
                     Parent = TitleRow,
                 })
                 if Info.TitleColor then
@@ -11710,7 +11824,7 @@ function Library:CreateWindow(WindowInfo)
             TextSize = 18,
             TextXAlignment = Enum.TextXAlignment.Left,
             LayoutOrder = 2,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = TitleRow,
         })
         if Info.TitleColor then
@@ -11727,7 +11841,7 @@ function Library:CreateWindow(WindowInfo)
             TextXAlignment = Enum.TextXAlignment.Left,
             TextWrapped = true,
             LayoutOrder = 2,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = HeaderContainer,
         })
         if Info.DescriptionColor then
@@ -11739,7 +11853,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 4,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = InnerContainer,
         })
         local _DialogContainerLayout = New("UIListLayout", {
@@ -11759,7 +11873,7 @@ function Library:CreateWindow(WindowInfo)
             BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 1),
             LayoutOrder = 5,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = InnerContainer,
         })
 
@@ -11775,7 +11889,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 6,
-            ZIndex = Library.DialogZIndex + 2,
+            ZIndex = Library.DialogContentZIndex + 2,
             Parent = InnerContainer,
         })
         local ButtonsLayout = New("UIListLayout", {
@@ -11905,7 +12019,7 @@ function Library:CreateWindow(WindowInfo)
                 BackgroundTransparency = 1,
                 Size = UDim2.fromOffset(0, 26),
                 LayoutOrder = ButtonInfo.Order or 0,
-                ZIndex = Library.DialogZIndex + 2,
+                ZIndex = Library.DialogContentZIndex + 2,
                 Parent = ButtonsHolder,
             })
 
@@ -11934,7 +12048,7 @@ function Library:CreateWindow(WindowInfo)
                 Size = UDim2.fromOffset(0, 26),
                 Text = "",
                 AutoButtonColor = false,
-                ZIndex = Library.DialogZIndex + 2,
+                ZIndex = Library.DialogContentZIndex + 2,
                 Parent = ButtonContainer,
             })
             Library:AddOutline(TextBtn)
@@ -12664,7 +12778,11 @@ function Library:CreateWindow(WindowInfo)
                         BorderSizePixel = 0,
                         Position = UDim2.fromOffset(RelX, RelY),
                         Size = UDim2.fromOffset(SizeX, SizeY),
-                        ZIndex = 190,
+                        -- Above all regular window content (tabs, sections,
+                        -- elements) but below tooltips/overlays, so the
+                        -- highlight ring is always visible over whatever it's
+                        -- pointing at instead of getting buried underneath it.
+                        ZIndex = Library.TooltipZIndex,
                         Parent = MainFrame,
                     })
                     local FlashStroke = New("UIStroke", {
