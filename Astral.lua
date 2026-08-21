@@ -285,12 +285,16 @@ local Library = {
     -- offset from it, so the whole stack can be shifted together and the
     -- ordering between layers is guaranteed instead of accidental.
     --
-    -- Layer order (low to high): Window -> Bubble -> Tooltip -> Overlays -> Cursor.
+    -- Layer order (low to high): Window -> Bubble -> Tooltip -> Overlays ->
+    -- SearchOverlay -> Dialog -> Cursor. Every layer is a SMALL offset from
+    -- BaseZIndex (tens/hundreds, not thousands) so the whole stack stays in
+    -- a tight, readable band instead of sprawling up into the 12000-13000
+    -- range. Nothing here needs to be that high: ZIndex only has to beat
+    -- its siblings, not hit some arbitrary "big enough" number.
     BaseZIndex = 999,
-    BubbleZIndexOffset = 1,     -- floats above the window, below everything else
-    TooltipZIndexOffset = 3,    -- always above window/bubble content
-    OverlayZIndexOffset = 6,    -- where the overlay band starts
-    CursorZIndexOffset = 5006,  -- always on top, above a generous overlay budget
+    BubbleZIndexOffset = 1,       -- floats above the window, below everything else
+    TooltipZIndexOffset = 3,      -- always above window/bubble content
+    OverlayZIndexOffset = 6,      -- where the overlay band starts
 
     -- Size of the ZIndex band handed to each individual overlay. Overlays
     -- used to all share the exact same Library.OverlayZIndex constant, so
@@ -300,9 +304,19 @@ local Library = {
     -- each overlay gets its own reserved band of this size: its root frame
     -- sits at the bottom of the band and its content sits exactly 1 above
     -- it, with the next overlay starting a full band later so overlays
-    -- never overlap each other.
-    OverlayZIndexSlotSize = 10,
+    -- never overlap each other. Kept small (4) since each overlay only
+    -- ever nests 2-3 ZIndex levels deep (root/chrome/container).
+    OverlayZIndexSlotSize = 4,
     OverlayZIndexCounter = 0,
+
+    -- How many overlay slots to budget for before the next named layer
+    -- (SearchOverlay) starts. 40 slots * 4 per slot = 160 -- comfortably
+    -- more concurrent overlays than the UI can ever actually have open at
+    -- once, while still keeping the numbers close together.
+    OverlayZIndexBudget = 40,
+    SearchOverlayZIndexOffset = nil, -- computed below, after OverlayZIndexBudget
+    DialogZIndexOffset = nil,        -- computed below, after SearchOverlay's band
+    CursorZIndexOffset = nil,        -- computed below, always the topmost layer
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -363,12 +377,38 @@ local Library = {
 
 -- Derived ZIndex layers, computed from BaseZIndex/*Offset above. Kept as
 -- real fields (not recomputed inline everywhere) so any code that reads
--- Library.OverlayZIndex/TooltipZIndex/BubbleZIndex/CursorZIndex sees a
--- single source of truth, and so shifting BaseZIndex later only requires
--- updating this one block.
+-- Library.OverlayZIndex/TooltipZIndex/BubbleZIndex/SearchOverlayZIndex/
+-- DialogZIndex/CursorZIndex sees a single source of truth, and so shifting
+-- BaseZIndex later only requires updating this one block. Each layer is
+-- derived from the END of the previous one (not a big fixed jump), which
+-- is what keeps the whole stack packed into a tight, close-together range
+-- instead of drifting up into the thousands.
 Library.TooltipZIndex = Library.BaseZIndex + Library.TooltipZIndexOffset
 Library.BubbleZIndex = Library.BaseZIndex + Library.BubbleZIndexOffset
 Library.OverlayZIndex = Library.BaseZIndex + Library.OverlayZIndexOffset
+
+-- End of the overlay band: the last ZIndex any single overlay could ever
+-- reach, given OverlayZIndexBudget concurrent overlays each using up to
+-- OverlayZIndexSlotSize levels.
+local OverlayBandEnd = Library.OverlayZIndex + (Library.OverlayZIndexBudget * Library.OverlayZIndexSlotSize)
+
+-- SearchOverlay (the tab/setting search popup) always needs to sit above
+-- every regular overlay, so it starts right after the overlay band ends.
+-- It uses 2 levels internally (frame, then its scroll content).
+Library.SearchOverlayZIndexOffset = OverlayBandEnd - Library.BaseZIndex
+Library.SearchOverlayZIndex = Library.BaseZIndex + Library.SearchOverlayZIndexOffset
+local SearchOverlayBandEnd = Library.SearchOverlayZIndex + 2
+
+-- Dialog (Window:AddDialog's modal) sits above SearchOverlay -- it's a
+-- true modal and must beat everything else in the window while open.
+-- It uses a handful of internal levels (overlay scrim, frame, content,
+-- footer buttons), so it gets a small reserved band, not a single ZIndex.
+Library.DialogZIndexOffset = (SearchOverlayBandEnd - Library.BaseZIndex)
+Library.DialogZIndex = Library.BaseZIndex + Library.DialogZIndexOffset
+local DialogBandEnd = Library.DialogZIndex + 4
+
+-- Cursor is always the topmost layer, directly after Dialog's band ends.
+Library.CursorZIndexOffset = (DialogBandEnd - Library.BaseZIndex) + 2
 Library.CursorZIndex = Library.BaseZIndex + Library.CursorZIndexOffset
 
 
@@ -1187,21 +1227,29 @@ function Library:SetDPIScale(DPIScale: number)
         Library:SafeCallback(Callback, ScaleFactor)
     end
 
-    -- Keep the bubble snapped to its side after a scale change. Reuses the
-    -- SAME SnapToSide the drag-release magnet uses (confirmed working)
-    -- instead of a separate hand-rolled reimplementation. Deferred to next
-    -- frame because AbsoluteSize/AbsolutePosition (which SnapToSide reads)
-    -- haven't propagated through Roblox's UI layout engine yet this frame --
+    -- Keep the bubble snapped to its side, AND re-centered on its stored
+    -- relative anchor, after a scale change. Reuses the SAME SnapToSide the
+    -- drag-release magnet uses (confirmed working) instead of a separate
+    -- hand-rolled reimplementation. Deferred to next frame because
+    -- AbsoluteSize/AbsolutePosition (which SnapToSide reads) haven't
+    -- propagated through Roblox's UI layout engine yet this frame --
     -- reading them synchronously right after the UIScale.Scale write above
-    -- would still report the OLD pre-scale-change size, which is why the
-    -- bubble looked "stuck" until something else (like a drag) forced a
-    -- later, fresh read.
+    -- would still report the OLD pre-scale-change size.
+    --
+    -- Passing PreserveRelativeY = true here is what actually fixes the
+    -- "bubble drifts/jumps when AutoDPIScale changes" bug: without it,
+    -- SnapToSide would clamp the bubble's stale, pre-scale AbsolutePosition
+    -- against the NEW rendered size, which is a different point on screen
+    -- proportionally (visibly "climbing" toward the top as the bubble
+    -- shrinks, for example). With it, SnapToSide re-derives Y purely from
+    -- the stored 0-1 ratio and the current size, so the bubble always ends
+    -- up in the exact same relative spot no matter how the scale changed.
     if Library.Bubble and Library.Bubble.Parent and Library.SnapBubbleToSide then
         local BubbleToSnap = Library.Bubble
         local SideToSnap = Library.BubbleSide or "Right"
         task.defer(function()
             if Library.Bubble == BubbleToSnap and BubbleToSnap.Parent then
-                Library.SnapBubbleToSide(SideToSnap)
+                Library.SnapBubbleToSide(SideToSnap, true)
             end
         end)
     end
@@ -11545,7 +11593,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 1),
             Text = "",
             Active = false,
-            ZIndex = 13000,
+            ZIndex = Library.DialogZIndex,
             Visible = true,
             Parent = MainFrame,
         })
@@ -11561,7 +11609,7 @@ function Library:CreateWindow(WindowInfo)
             AutomaticSize = Enum.AutomaticSize.Y,
             Text = "",
             AutoButtonColor = false,
-            ZIndex = 13001,
+            ZIndex = Library.DialogZIndex + 1,
             Parent = DialogOverlay,
         })
         table.insert(
@@ -11577,7 +11625,7 @@ function Library:CreateWindow(WindowInfo)
             BackgroundTransparency = 1,
             Size = UDim2.fromScale(1, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = DialogFrame,
         })
         local DialogScale = New("UIScale", {
@@ -11605,7 +11653,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 1,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = InnerContainer,
         })
         New("UIListLayout", {
@@ -11623,7 +11671,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(1, 0, 0, 20),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 1,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = HeaderContainer,
         })
         New("UIListLayout", {
@@ -11645,7 +11693,7 @@ function Library:CreateWindow(WindowInfo)
                     ImageRectOffset = ParsedIcon.ImageRectOffset,
                     ImageRectSize = ParsedIcon.ImageRectSize,
                     LayoutOrder = 1,
-                    ZIndex = 13002,
+                    ZIndex = Library.DialogZIndex + 2,
                     Parent = TitleRow,
                 })
                 if Info.TitleColor then
@@ -11662,7 +11710,7 @@ function Library:CreateWindow(WindowInfo)
             TextSize = 18,
             TextXAlignment = Enum.TextXAlignment.Left,
             LayoutOrder = 2,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = TitleRow,
         })
         if Info.TitleColor then
@@ -11679,7 +11727,7 @@ function Library:CreateWindow(WindowInfo)
             TextXAlignment = Enum.TextXAlignment.Left,
             TextWrapped = true,
             LayoutOrder = 2,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = HeaderContainer,
         })
         if Info.DescriptionColor then
@@ -11691,7 +11739,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 4,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = InnerContainer,
         })
         local _DialogContainerLayout = New("UIListLayout", {
@@ -11711,7 +11759,7 @@ function Library:CreateWindow(WindowInfo)
             BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 1),
             LayoutOrder = 5,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = InnerContainer,
         })
 
@@ -11727,7 +11775,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 6,
-            ZIndex = 13002,
+            ZIndex = Library.DialogZIndex + 2,
             Parent = InnerContainer,
         })
         local ButtonsLayout = New("UIListLayout", {
@@ -11857,7 +11905,7 @@ function Library:CreateWindow(WindowInfo)
                 BackgroundTransparency = 1,
                 Size = UDim2.fromOffset(0, 26),
                 LayoutOrder = ButtonInfo.Order or 0,
-                ZIndex = 13002,
+                ZIndex = Library.DialogZIndex + 2,
                 Parent = ButtonsHolder,
             })
 
@@ -11886,7 +11934,7 @@ function Library:CreateWindow(WindowInfo)
                 Size = UDim2.fromOffset(0, 26),
                 Text = "",
                 AutoButtonColor = false,
-                ZIndex = 13002,
+                ZIndex = Library.DialogZIndex + 2,
                 Parent = ButtonContainer,
             })
             Library:AddOutline(TextBtn)
@@ -12290,20 +12338,49 @@ function Library:CreateWindow(WindowInfo)
 
             local SnapTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
-            local function SnapToSide(ToSide: string)
-                local ScreenSize = ScreenGui.AbsoluteSize
+            -- Library.BubbleRelativeY is the bubble's vertical anchor as a
+            -- 0-1 FRACTION of the available travel range (0 = flush to the
+            -- top, 1 = flush to the bottom), not a raw pixel offset. Raw
+            -- pixels are what caused the bubble to drift toward the top
+            -- (or off-position generally) whenever AutoDPIScale changed the
+            -- rendered size: clamping an old absolute Y against a new,
+            -- different RenderedHeight is not the same point on screen
+            -- proportionally, so the bubble visibly "jumped". Storing a
+            -- ratio instead means re-deriving the pixel Y after ANY size
+            -- change reproduces the same relative position exactly, so a
+            -- DPI change re-centers the bubble on its own anchor instead of
+            -- letting it creep. Defaults to vertical center (0.5).
+            if Library.BubbleRelativeY == nil then
+                Library.BubbleRelativeY = 0.5
+            end
 
+            local function GetAvailableY(RenderedHeight: number): number
+                local ScreenSize = ScreenGui.AbsoluteSize
+                return math.max(0, ScreenSize.Y - RenderedHeight)
+            end
+
+            local function SnapToSide(ToSide: string, PreserveRelativeY: boolean?)
                 -- UIScale only multiplies Bubble's AbsoluteSize; it never
                 -- touches Position. So Bubble.Position's offset is already in
                 -- real screen pixels, same space as AbsolutePosition and
                 -- ScreenGui.AbsoluteSize -- no scale conversion needed here.
                 -- The bubble sits flush against the screen edge (no margin).
-                local Y = Bubble.AbsolutePosition.Y
                 local RenderedHeight = Bubble.AbsoluteSize.Y
                 local RenderedWidth = Bubble.AbsoluteSize.X
+                local AvailableY = GetAvailableY(RenderedHeight)
 
-                local ClampedY =
-                    math.clamp(Y, 0, math.max(0, ScreenSize.Y - RenderedHeight))
+                local ClampedY
+                if PreserveRelativeY then
+                    -- Re-derive Y from the stored ratio instead of the
+                    -- current (possibly stale/pre-scale) AbsolutePosition,
+                    -- so the bubble reappears at the SAME relative spot
+                    -- regardless of how much RenderedHeight just changed.
+                    ClampedY = AvailableY * math.clamp(Library.BubbleRelativeY, 0, 1)
+                else
+                    local Y = Bubble.AbsolutePosition.Y
+                    ClampedY = math.clamp(Y, 0, AvailableY)
+                    Library.BubbleRelativeY = (AvailableY > 0) and (ClampedY / AvailableY) or 0.5
+                end
 
                 local TargetPos
                 if ToSide == "Right" then
@@ -12352,6 +12429,11 @@ function Library:CreateWindow(WindowInfo)
                     if Moved then
                         local ScreenSize = ScreenGui.AbsoluteSize
                         local CenterX = Bubble.AbsolutePosition.X + (Bubble.AbsoluteSize.X / 2)
+                        -- Not PreserveRelativeY: the user just dragged to a
+                        -- brand new spot, so SnapToSide should read that new
+                        -- AbsolutePosition and record ITS ratio as the new
+                        -- anchor, rather than snapping back to wherever the
+                        -- bubble was before the drag.
                         SnapToSide(CenterX < (ScreenSize.X / 2) and "Left" or "Right")
                     else
                         Library:Toggle()
@@ -12447,7 +12529,7 @@ function Library:CreateWindow(WindowInfo)
             BorderSizePixel = 0,
             Size = UDim2.new(0, 300, 0, 400),
             Visible = false,
-            ZIndex = 12000,
+            ZIndex = Library.SearchOverlayZIndex,
             -- Parented to MainFrame (not ScreenGui) so it shares MainFrame's
             -- single UIScale instead of getting its own independent one via
             -- NewTrackedScale. Previously SearchOverlay and SearchBox lived
@@ -12480,7 +12562,7 @@ function Library:CreateWindow(WindowInfo)
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             ScrollBarThickness = 3,
             ScrollBarImageColor3 = "OutlineColor",
-            ZIndex = 12001,
+            ZIndex = Library.SearchOverlayZIndex + 1,
             Parent = SearchOverlay,
         })
         Library:AddToRegistry(ScrollFrame, { ScrollBarImageColor3 = "OutlineColor" })

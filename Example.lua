@@ -2,8 +2,7 @@
 -- ASTRAL UI — QUICK REFERENCE EXAMPLE
 --============================================================================
 
--- Use the patched Astral library.
--- If you publish this patch to your repo, point this URL at that patched Astral.lua.
+-- Load the Astral UI library.
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/Astral/refs/heads/main/Astral.lua"))()
 
 --============================================================================
@@ -35,13 +34,10 @@ local Window = Library:CreateWindow({
     SidebarCompacted = false,
     SingleInstance   = true,
 
-    -- AutoShow = false is required for SaveManager:Init(Window) (see the
-    -- bottom of this script) to actually prevent the "flash of default
-    -- values" -- if the window shows itself immediately, it's already
-    -- visible before the script even reaches the SaveManager:Init line,
-    -- so every Toggle/Slider/etc. below briefly renders its Default before
-    -- snapping to the saved config value. Window:Toggle(true) is called
-    -- manually once loading is fully done, further down.
+    -- AutoShow = false keeps the window hidden until the config has fully
+    -- loaded, so every element below shows its saved value immediately
+    -- instead of briefly flashing its Default first. Window:Toggle(true)
+    -- is called once loading finishes, further down.
     AutoShow         = false,
 })
 
@@ -91,7 +87,7 @@ local BasicToggle = ToggleSection:AddToggle("BasicToggle", {
 })
 -- OnChanged: attach an ADDITIONAL listener alongside Callback (both fire)
 BasicToggle:OnChanged(function(Value)
-    print("[OnChanged] BasicToggle ->", Value)
+    print({ Event = "BasicToggle", Value = Value })
 end)
 
 -- Risky = true, combined with a Tooltip
@@ -139,16 +135,13 @@ ToggleSection:AddButton({
 -- Section:AddCheckbox(Idx, Info) -> identical Info/API to AddToggle,
 -- just rendered as a square checkbox instead of a pill switch.
 -- Library:SetForceCheckbox(true) makes every AddToggle-created toggle
--- render as a checkbox -- including ones already on screen, updated live.
--- (Plain `Library.ForceCheckbox = true` assignment does NOT do this -- it's
--- only read once at AddToggle-call-time, so it silently no-ops on anything
--- already created. Always go through SetForceCheckbox.)
+-- render as a checkbox, live, including ones already on screen.
 local CheckboxSection = FormTab:AddRightSection("Checkbox variant")
 
 CheckboxSection:AddCheckbox("BasicCheckbox", {
     Text = "Checkbox Style",
     Default = false,
-    Callback = function(Value) print("Checkbox:", Value) end,
+    Callback = function(Value) print({ Event = "BasicCheckbox", Value = Value }) end,
 })
 CheckboxSection:AddCheckbox("RiskyCheckbox", {
     Text = "Risky Checkbox",
@@ -181,7 +174,7 @@ local SpeedSlider = SliderSection:AddSlider("SpeedSlider", {
     Suffix = " studs/s",
 })
 SpeedSlider:OnChanged(function(Value)
-    print("[OnChanged] SpeedSlider ->", Value)
+    print({ Event = "SpeedSlider", Value = Value })
 end)
 
 SliderSection:AddButton({
@@ -290,10 +283,10 @@ local ModeDropdown = DropdownSection:AddDropdown("ModeDropdown", {
     Text = "Select Mode",
     Values = { "Option A", "Option B", "Option C" },
     Default = "Option A",
-    Callback = function(Value) print("[Callback] ModeDropdown ->", Value) end,
+    Callback = function(Value) print({ Event = "ModeDropdown", Value = Value }) end,
 })
 ModeDropdown:OnChanged(function(Value)
-    print("[OnChanged] ModeDropdown ->", Value)
+    print({ Event = "ModeDropdown", Value = Value })
 end)
 
 -- Combination: AllowNull (can deselect the last item) + DisabledValues
@@ -359,7 +352,7 @@ local RolesDropdown = FormTab:AddLeftSection("Dropdown — multi-select"):AddDro
     Multi = true,
     Searchable = true,
     MaxVisibleDropdownItems = 6,
-    Callback = function(Value) print("[Callback] RolesDropdown ->", Value) end,
+    Callback = function(Value) print({ Event = "RolesDropdown", Value = Value }) end,
 })
 
 -- GetActiveValues, SetSelectedValue, DeselectValue, ClearSelectedValues
@@ -405,7 +398,7 @@ local NameInput = InputSection:AddInput("NameInput", {
     Default = "",
 })
 NameInput:OnChanged(function(Value)
-    print("[OnChanged] NameInput ->", Value)
+    print({ Event = "NameInput", Value = Value })
 end)
 
 InputSection:AddButton({
@@ -433,7 +426,7 @@ InputSection:AddInput("NumericInput", {
     Placeholder = "123",
     Numeric = true,
     Finished = true,
-    Callback = function(Value) print("[Callback] NumericInput ->", Value) end,
+    Callback = function(Value) print({ Event = "NumericInput", Value = Value }) end,
 })
 
 -- Combination: AllowEmpty = false + EmptyReset (falls back when cleared)
@@ -527,7 +520,7 @@ local HealthBar = ProgressSection:AddProgressBar("HealthBar", {
     Suffix = " HP",
 })
 HealthBar:OnChanged(function(Value)
-    print("[OnChanged] HealthBar ->", Value)
+    print({ Event = "HealthBar", Value = Value })
 end)
 
 ProgressSection:AddButton({
@@ -781,7 +774,7 @@ MainButton:AddButton({
 
 -- Shorthand form: AddButton("Label", function)
 ButtonSection:AddButton("Shorthand Button", function()
-    print("Shorthand button clicked")
+    print({ Event = "ShorthandButton", Clicked = true })
 end)
 
 ButtonSection:AddButton({
@@ -860,7 +853,7 @@ local BoundKey = BoundToggle:AddKeyPicker("BoundToggleKey", {
     SyncToggleState = true,
 })
 BoundKey:OnChanged(function(KeyCode, Modifiers)
-    print("[OnChanged] BoundToggleKey ->", KeyCode, Modifiers)
+    print({ Event = "BoundToggleKey", KeyCode = KeyCode, Modifiers = Modifiers })
 end)
 
 -- Mode = "Hold" on a mouse button, with SyncToggleState again
@@ -875,7 +868,7 @@ local HoldKey = HoldToggle:AddKeyPicker("HoldToggleKey", {
     SyncToggleState = true,
 })
 HoldKey:OnChanged(function(KeyCode, Modifiers)
-    print("[OnChanged] HoldToggleKey ->", KeyCode, Modifiers)
+    print({ Event = "HoldToggleKey", KeyCode = KeyCode, Modifiers = Modifiers })
 end)
 
 -- Mode = "Press" with DefaultModifiers, attached to a Label (fires once
@@ -887,7 +880,7 @@ PressLabel:AddKeyPicker("PressKey", {
     DefaultModifiers = { "LCtrl", "LShift" },
     Mode = "Press",
     Callback = function(State)
-        print("[Callback] PressKey fired, state:", State)
+        print({ Event = "PressKey", State = State })
     end,
 })
 
@@ -906,16 +899,8 @@ KeySection:AddButton({
 
 -- Every KeyPicker created above (BoundToggleKey, HoldToggleKey, PressKey)
 -- auto-registers a row in the floating Keybinds panel, rendered as
--- "[Key] Text (Mode)" using each picker's own Text field -- this is why the
--- three pickers above were given distinct, descriptive Text values instead
--- of all sharing something generic like "Key". Library.KeybindFrame is the
--- panel itself; Library.KeybindContainer holds its entries.
-KeySection:AddButton({
-    Text = "Toggle Keybinds Panel",
-    Func = function()
-        Library.KeybindFrame.Visible = not Library.KeybindFrame.Visible
-    end,
-})
+-- "[Key] Text (Mode)" using each picker's own Text field. Library.KeybindFrame
+-- is the panel itself; Library.KeybindContainer holds its entries.
 
 -- ColorPicker attaches to a Toggle or Label:
 --   Toggle:AddColorPicker(Idx, Info) / Label:AddColorPicker(Idx, Info)
@@ -923,18 +908,13 @@ KeySection:AddButton({
 -- Methods: SetValue(HSV table or Color3, Transparency?), SetValueRGB(Color3, Transparency?), OnChanged
 local ColorSection = ActionsTab:AddLeftSection("Color Picker — every method")
 
--- NOTE: requires the Astral.lua fix where AddColorPicker/AddKeyPicker
--- return the picker object instead of `self` (the parent Label/Toggle).
--- Without that fix, AccentPicker below is actually ColorLabel, and
--- AccentPicker:OnChanged(...) throws "attempt to call missing method
--- 'OnChanged' of table".
 local ColorLabel = ColorSection:AddLabel("Accent Color (no alpha)")
 local AccentPicker = ColorLabel:AddColorPicker("AccentColor", {
     Default = Color3.fromRGB(66, 135, 245),
     Title = "Pick a Color",
 })
 AccentPicker:OnChanged(function(Color)
-    print("[OnChanged] AccentColor ->", Color)
+    print({ Event = "AccentColor", Color = Color })
 end)
 
 -- Combination: attached to a Toggle instead of a Label, with Transparency
@@ -1481,16 +1461,37 @@ BubbleSection:AddToggle("BubbleToggle", {
     Text = "Enable Floating Bubble",
     Default = false,
     Callback = function(Value)
-        -- Guarded: Library:ToggleBubble only exists once CreateWindow has
-        -- finished running (it's defined inside CreateWindow itself). If
-        -- you ever see "attempt to call missing method 'ToggleBubble'",
-        -- you're loading an older cached copy of Astral.lua that predates
-        -- this method -- re-fetch/redeploy Astral.lua and it will resolve.
-        if Library.ToggleBubble then
-            Library:ToggleBubble(Value)
-        else
-            warn("Library:ToggleBubble is missing -- update Astral.lua")
-        end
+        Library:ToggleBubble(Value)
+    end,
+})
+
+-- --------------------------------------------------------------
+-- Keybind Frame: the library automatically builds ONE draggable
+-- panel (Library.KeybindFrame) the moment CreateWindow runs, and
+-- every AddKeyPicker with Mode = "Toggle" registers a row into it
+-- (showing "[Key] Label (Toggle)" plus its own on/off state) whenever
+-- that keybind is actively toggled on. It's hidden by default until
+-- the first such row appears, and it obeys ShowToggleFrameInKeybinds
+-- like any other keybind row.
+--
+-- It's a plain Frame under the hood (Library.KeybindFrame.Visible),
+-- so it's also just as easy to show/hide by hand -- e.g. if you want
+-- an explicit "show my active keybinds" switch instead of relying on
+-- it auto-appearing, or want to hide it entirely for a cleaner overlay
+-- layout. This toggle does exactly that.
+-- --------------------------------------------------------------
+local KeybindFrameSection = OverlaysTab:AddRightSection("Keybind Frame")
+
+KeybindFrameSection:AddLabel({
+    Text = "Add a Toggle-mode key picker (Actions tab) to see rows appear here automatically.",
+    DoesWrap = true,
+})
+
+KeybindFrameSection:AddToggle("ShowKeybindFrameToggle", {
+    Text = "Show Keybind Frame",
+    Default = false,
+    Callback = function(Value)
+        Library.KeybindFrame.Visible = Value
     end,
 })
 
@@ -1607,23 +1608,18 @@ SaveManager:IgnoreThemeSettings()
 -- likely to need adjusting first (e.g. on a small or high-DPI screen)
 -- before the rest of the settings tab is even comfortable to read.
 --
--- Astral now auto-computes DPIScale from the actual screen/viewport size
--- on load, and keeps recalculating it live as the viewport changes
--- (window resize, device rotation, split screen) -- so on a small phone
--- the whole UI scales down to fit rather than just getting pixel-clamped
--- into a cramped box. Dragging this slider takes over as a manual
--- override (Library.AutoDPIScale becomes false) so your choice sticks
--- instead of being overwritten by the next auto-resize; there's a button
--- underneath to go back to automatic sizing at any time.
+-- Astral auto-computes DPIScale from the screen/viewport size, and keeps
+-- recalculating it live as the viewport changes (window resize, device
+-- rotation, split screen) -- so on a small phone the whole UI scales down
+-- to fit rather than getting pixel-clamped into a cramped box. Dragging
+-- this slider takes over as a manual override (Library.AutoDPIScale
+-- becomes false) so the choice sticks instead of being overwritten by the
+-- next auto-resize; the button underneath returns to automatic sizing.
 --
--- DPI 5 is the neutral/default value. The real auto-fit work happens via
--- Library.BaseScale, which is recalculated from the viewport whenever
--- SetDPIScale runs (and live, on viewport change, while AutoDPIScale is
--- on) -- so on a small phone the whole UI scales down to fit rather than
--- getting pixel-clamped into a cramped box.
--- Library:SetDPIScale(Value: number 1-10) rescales the entire UI --
--- window, sidebar, dropdowns, notifications, overlays, and any active
--- loading screen -- everything registered in Library.Scales.
+-- DPI 5 is the neutral/default value. Library:SetDPIScale(Value: number
+-- 1-10) rescales the entire UI -- window, sidebar, dropdowns,
+-- notifications, overlays, and any active loading screen -- everything
+-- registered in Library.Scales.
 local DisplaySection = SettingsTab:AddSection({ Name = "Display", IconName = "sliders-horizontal" })
 DisplaySection:AddSlider("UIScaleSlider", {
     Text = "UI Scale",
@@ -1650,12 +1646,11 @@ DisplaySection:AddButton({
 -- ThemeManager: color scheme presets + custom color editing.
 ThemeManager:ApplyToTab(SettingsTab)
 
--- SaveManager: save/load/autoload named configs. BuildConfigSection now
--- loads the config and shows the window automatically once this script
--- finishes running (AutoShow = false above is what keeps the window hidden
--- until then) -- no separate SaveManager:Init(Window) call needed.
--- BuildConfigSection now uses ResetToDefaults() when a config is missing/deleted.
--- KeyPicker defaults are therefore recreated from DefaultKey/DefaultMode/DefaultModifiers.
+-- SaveManager: save/load/autoload named configs. BuildConfigSection loads
+-- the saved config and shows the window automatically once the config is
+-- ready. If a config is missing or deleted, it falls back to each
+-- element's own defaults (including KeyPicker DefaultKey/DefaultMode/
+-- DefaultModifiers).
 SaveManager:BuildConfigSection(SettingsTab)
 
 -- Notify is safe to queue up before the window is shown -- it's stored and
