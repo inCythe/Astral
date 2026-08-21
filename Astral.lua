@@ -1234,14 +1234,22 @@ function Library:SetDPIScale(DPIScale: number)
         UIScale.Scale = ScaleFactor - (tonumber(Library.ScalesOffset[UIScale]) or 0)
     end
 
-    -- Re-center on every scale change, even if the window was previously
-    -- dragged. MainWindowWasMoved is deliberately NOT checked here: it only
-    -- exists to stop *automatic* viewport-resize handling from fighting a
-    -- manual drag between scale changes, not to permanently disable
-    -- recentering the moment the window has ever been moved once. Without
-    -- this, dragging the window even slightly during a session would
-    -- silently break "center on UI scale change" for the rest of that
-    -- session, which is the reported bug.
+    -- Re-center the main window around its own midpoint whenever the scale
+    -- changes, so resizing via DPI/UI-scale doesn't leave the window
+    -- lopsided (growing/shrinking from its top-left corner, drifting off
+    -- one edge of the screen, etc).
+    --
+    -- This intentionally ignores Library.MainWindowWasMoved: that flag
+    -- exists to stop AUTOMATIC/passive re-centering (e.g. on viewport
+    -- resize) from fighting a window the user has manually dragged
+    -- somewhere else. But an explicit scale change is a deliberate action
+    -- the user just took -- centering the window around ITS OWN new size
+    -- at that moment is the expected, useful behavior every time, not a
+    -- one-shot "only before the user ever touches the window" behavior.
+    -- Without ignoring the flag here, dragging the window even once (very
+    -- likely, since it's the main window) would permanently disable
+    -- re-centering on every future scale change for the rest of the
+    -- session.
     if Library.MainFrame and Library.CenterMainWindow then
         local MainScaleFactor = (Library.MainWindowScale and Library.MainWindowScale.Scale) or ScaleFactor
         local ScaledWidth = Library.MainFrame.Size.X.Offset * MainScaleFactor
@@ -2240,13 +2248,21 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     -- a soft :Remove(), re-register it with the manager so GetOverlays() /
     -- RemoveAllOverlays() / SetAllOverlaysVisible() see it again too,
     -- instead of leaving it permanently untracked after the first removal.
+    --
+    -- Forwards ALL extra arguments (...) to BaseSetVisible, not just
+    -- Visible -- ContextMenu's SetVisible(Visible, Force) relies on that
+    -- second Force argument surviving this wrapper so SetAllOverlaysVisible
+    -- can bypass context menus' single-open-at-a-time exclusivity. Dropping
+    -- extra args here would silently break that for every overlay type,
+    -- not just ContextMenu, since every overlay's SetVisible gets wrapped
+    -- through this same function.
     local BaseSetVisible = Table.SetVisible
-    function Table:SetVisible(Visible: boolean)
+    function Table:SetVisible(Visible: boolean, ...)
         if Visible and Library.Overlays[Id] ~= Table and not Table.__Destroyed then
             Library.Overlays[Id] = Table
             table.insert(Library.OverlaysOrder, Table)
         end
-        return BaseSetVisible(Table, Visible)
+        return BaseSetVisible(Table, Visible, ...)
     end
 
     if not Table.IsVisible then
@@ -2378,7 +2394,16 @@ end
 
 function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
     for _, Overlay in Library:GetOverlays(OverlayType) do
-        Overlay:SetVisible(Visible)
+        -- Force = true is passed through to every overlay's SetVisible.
+        -- Non-ContextMenu overlay types just ignore the extra argument, but
+        -- ContextMenu specifically needs it: context menus normally close
+        -- one another on Open() to enforce "only one open at a time" for
+        -- real click-driven interaction, which meant a bulk "show all"
+        -- call used to just cycle through them and leave only the last one
+        -- visible. Force skips that exclusivity so a deliberate "show every
+        -- overlay that exists" call actually shows every overlay that
+        -- exists, context menus included.
+        Overlay:SetVisible(Visible, true)
     end
 end
 
@@ -3117,7 +3142,7 @@ function Library:AddContextMenu(
         )
     end
 
-    function Table:Open()
+    function Table:Open(Force: boolean?)
         if Removed then
             -- Menu instance is destroyed; silently refuse instead of
             -- erroring or writing properties onto a dead Instance.
@@ -3126,7 +3151,7 @@ function Library:AddContextMenu(
 
         if CurrentMenu == Table then
             return
-        elseif CurrentMenu then
+        elseif CurrentMenu and not Force then
             CurrentMenu:Close()
         end
 
@@ -3142,7 +3167,16 @@ function Library:AddContextMenu(
             table.insert(Library.OverlaysOrder, Table)
         end
 
-        CurrentMenu = Table
+        -- Force (used by SetAllOverlaysVisible/"Show All Overlays") skips
+        -- the single-global-menu exclusivity above, so multiple context
+        -- menus can be shown at once for inspection/demo purposes. It
+        -- deliberately does NOT reassign CurrentMenu in that case: real
+        -- click-driven Open() calls (Force absent) should still only ever
+        -- compete with whatever the user is ACTUALLY interacting with, not
+        -- with something a bulk "show all" call left open.
+        if not Force then
+            CurrentMenu = Table
+        end
         Table.Active = true
 
         Menu.Position = ComputeMenuPosition()
@@ -3171,13 +3205,21 @@ function Library:AddContextMenu(
             Table.Signal = nil
         end
 
-        if CurrentMenu ~= Table then
+        -- Force-opened menus (see Open(Force)) never became CurrentMenu, so
+        -- the old "if CurrentMenu ~= Table then return" guard would refuse
+        -- to close them at all -- meaning "Hide All Overlays" couldn't hide
+        -- a context menu that "Show All Overlays" had force-opened. Close
+        -- unconditionally instead; only clear/callback the CurrentMenu
+        -- bookkeeping when this menu actually IS the tracked current one.
+        if not Table.Active then
             return
         end
         Menu.Visible = false
 
         Table.Active = false
-        CurrentMenu = nil
+        if CurrentMenu == Table then
+            CurrentMenu = nil
+        end
         if typeof(ActiveCallback) == "function" then
             Library:SafeCallback(ActiveCallback, false)
         end
@@ -3199,9 +3241,9 @@ function Library:AddContextMenu(
         Menu.Size = typeof(Size) == "function" and Size() or Size
     end
 
-    function Table:SetVisible(Visible: boolean)
+    function Table:SetVisible(Visible: boolean, Force: boolean?)
         if Visible then
-            Table:Open()
+            Table:Open(Force)
         else
             Table:Close()
         end
@@ -9026,11 +9068,7 @@ function Library:CreateWindow(WindowInfo)
         MainWindowScale = MainFrame:FindFirstChildOfClass("UIScale")
         Library.MainFrame = MainFrame
         Library.MainWindowScale = MainWindowScale
-        -- Defaults to true: re-centering the window whenever the UI scale
-        -- changes (manual slider, or auto DPI on viewport/device change) is
-        -- the behavior users expect out of the box. Pass `Center = false`
-        -- explicitly to opt out and keep whatever Position was set.
-        Library.CenterMainWindow = WindowInfo.Center ~= false
+        Library.CenterMainWindow = WindowInfo.Center and true or false
 
         do
             if ExplicitDPIScale ~= nil then
@@ -9089,20 +9127,7 @@ function Library:CreateWindow(WindowInfo)
             BackgroundColor3 = "OutlineColor",
             Position = UDim2.fromOffset(InitialLeftWidth, 0),
             Size = UDim2.new(0, 1, 1, -20),
-            -- Was a hardcoded literal (3), completely disconnected from
-            -- Library.BaseZIndex/MainFrame.ZIndex (~999, and this file uses
-            -- ZIndexBehavior.Global, so ZIndex comparisons are GLOBAL, not
-            -- just among siblings -- see the ZIndexBehavior.Global note a
-            -- few lines below). That meant DividerLine -- and, since the
-            -- sidebar-resize grabber below is positioned at
-            -- "DividerLine.ZIndex + 1", the grabber too -- sat far UNDER
-            -- MainFrame and everything inside it (Sidebar, Tabs, etc, all
-            -- at or above Library.BaseZIndex), so clicks/hover meant for
-            -- the resize handle were actually landing on the sidebar
-            -- content instead, making the sidebar impossible to resize.
-            -- Anchoring to MainFrame.ZIndex keeps it correctly just above
-            -- the window's own content instead of an arbitrary low number.
-            ZIndex = MainFrame.ZIndex + 2,
+            ZIndex = 3,
             Parent = MainFrame,
         })
 
@@ -12438,29 +12463,6 @@ function Library:CreateWindow(WindowInfo)
             Library.Bubble = Bubble
             Library.BubbleScale = BubbleScale
 
-            -- Register the bubble with the overlay manager so it's covered
-            -- by GetOverlays()/SetAllOverlaysVisible()/RemoveAllOverlays(),
-            -- same as draggable labels/buttons/menus and context menus.
-            -- Without this, "Show All Overlays" / "Hide All Overlays"
-            -- silently skipped the bubble even though it's a floating,
-            -- toggleable surface just like the rest.
-            local BubbleOverlay = { Holder = Bubble }
-            function BubbleOverlay:SetVisible(Visible: boolean)
-                if Library.Bubble and Library.Bubble.Parent then
-                    Library.Bubble.Visible = Visible
-                end
-            end
-            function BubbleOverlay:IsVisible(): boolean
-                return Library.Bubble ~= nil and Library.Bubble.Parent ~= nil and Library.Bubble.Visible
-            end
-            function BubbleOverlay:Remove()
-                if Library.ToggleBubble then
-                    Library.ToggleBubble(false)
-                end
-            end
-            Library:RegisterOverlay("Bubble", "Toggle Bubble", BubbleOverlay)
-            Library.BubbleOverlay = BubbleOverlay
-
             Library:AddOutline(Bubble)
 
             local IconSize = UDim2.fromOffset(
@@ -12644,16 +12646,7 @@ function Library:CreateWindow(WindowInfo)
 
             if Value then
                 if Library.Bubble then
-                    -- Route through the registered overlay's SetVisible
-                    -- (rather than setting .Visible directly) so that
-                    -- re-showing a bubble that was previously soft-removed
-                    -- via RemoveOverlay/RemoveAllOverlays re-registers it
-                    -- with the manager, same as every other overlay type.
-                    if Library.BubbleOverlay then
-                        Library.BubbleOverlay:SetVisible(true)
-                    else
-                        Library.Bubble.Visible = true
-                    end
+                    Library.Bubble.Visible = true
                 else
                     -- Same as the initial creation path: make sure DPIScale
                     -- reflects the current viewport before the bubble's
@@ -12667,11 +12660,7 @@ function Library:CreateWindow(WindowInfo)
                 end
             else
                 if Library.Bubble then
-                    if Library.BubbleOverlay then
-                        Library.BubbleOverlay:SetVisible(false)
-                    else
-                        Library.Bubble.Visible = false
-                    end
+                    Library.Bubble.Visible = false
                 end
             end
 
