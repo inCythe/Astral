@@ -1234,7 +1234,15 @@ function Library:SetDPIScale(DPIScale: number)
         UIScale.Scale = ScaleFactor - (tonumber(Library.ScalesOffset[UIScale]) or 0)
     end
 
-    if Library.MainFrame and Library.CenterMainWindow and not Library.MainWindowWasMoved then
+    -- Re-center on every scale change, even if the window was previously
+    -- dragged. MainWindowWasMoved is deliberately NOT checked here: it only
+    -- exists to stop *automatic* viewport-resize handling from fighting a
+    -- manual drag between scale changes, not to permanently disable
+    -- recentering the moment the window has ever been moved once. Without
+    -- this, dragging the window even slightly during a session would
+    -- silently break "center on UI scale change" for the rest of that
+    -- session, which is the reported bug.
+    if Library.MainFrame and Library.CenterMainWindow then
         local MainScaleFactor = (Library.MainWindowScale and Library.MainWindowScale.Scale) or ScaleFactor
         local ScaledWidth = Library.MainFrame.Size.X.Offset * MainScaleFactor
         local ScaledHeight = Library.MainFrame.Size.Y.Offset * MainScaleFactor
@@ -9018,7 +9026,11 @@ function Library:CreateWindow(WindowInfo)
         MainWindowScale = MainFrame:FindFirstChildOfClass("UIScale")
         Library.MainFrame = MainFrame
         Library.MainWindowScale = MainWindowScale
-        Library.CenterMainWindow = WindowInfo.Center and true or false
+        -- Defaults to true: re-centering the window whenever the UI scale
+        -- changes (manual slider, or auto DPI on viewport/device change) is
+        -- the behavior users expect out of the box. Pass `Center = false`
+        -- explicitly to opt out and keep whatever Position was set.
+        Library.CenterMainWindow = WindowInfo.Center ~= false
 
         do
             if ExplicitDPIScale ~= nil then
@@ -9077,7 +9089,20 @@ function Library:CreateWindow(WindowInfo)
             BackgroundColor3 = "OutlineColor",
             Position = UDim2.fromOffset(InitialLeftWidth, 0),
             Size = UDim2.new(0, 1, 1, -20),
-            ZIndex = 3,
+            -- Was a hardcoded literal (3), completely disconnected from
+            -- Library.BaseZIndex/MainFrame.ZIndex (~999, and this file uses
+            -- ZIndexBehavior.Global, so ZIndex comparisons are GLOBAL, not
+            -- just among siblings -- see the ZIndexBehavior.Global note a
+            -- few lines below). That meant DividerLine -- and, since the
+            -- sidebar-resize grabber below is positioned at
+            -- "DividerLine.ZIndex + 1", the grabber too -- sat far UNDER
+            -- MainFrame and everything inside it (Sidebar, Tabs, etc, all
+            -- at or above Library.BaseZIndex), so clicks/hover meant for
+            -- the resize handle were actually landing on the sidebar
+            -- content instead, making the sidebar impossible to resize.
+            -- Anchoring to MainFrame.ZIndex keeps it correctly just above
+            -- the window's own content instead of an arbitrary low number.
+            ZIndex = MainFrame.ZIndex + 2,
             Parent = MainFrame,
         })
 
@@ -12413,6 +12438,29 @@ function Library:CreateWindow(WindowInfo)
             Library.Bubble = Bubble
             Library.BubbleScale = BubbleScale
 
+            -- Register the bubble with the overlay manager so it's covered
+            -- by GetOverlays()/SetAllOverlaysVisible()/RemoveAllOverlays(),
+            -- same as draggable labels/buttons/menus and context menus.
+            -- Without this, "Show All Overlays" / "Hide All Overlays"
+            -- silently skipped the bubble even though it's a floating,
+            -- toggleable surface just like the rest.
+            local BubbleOverlay = { Holder = Bubble }
+            function BubbleOverlay:SetVisible(Visible: boolean)
+                if Library.Bubble and Library.Bubble.Parent then
+                    Library.Bubble.Visible = Visible
+                end
+            end
+            function BubbleOverlay:IsVisible(): boolean
+                return Library.Bubble ~= nil and Library.Bubble.Parent ~= nil and Library.Bubble.Visible
+            end
+            function BubbleOverlay:Remove()
+                if Library.ToggleBubble then
+                    Library.ToggleBubble(false)
+                end
+            end
+            Library:RegisterOverlay("Bubble", "Toggle Bubble", BubbleOverlay)
+            Library.BubbleOverlay = BubbleOverlay
+
             Library:AddOutline(Bubble)
 
             local IconSize = UDim2.fromOffset(
@@ -12596,7 +12644,16 @@ function Library:CreateWindow(WindowInfo)
 
             if Value then
                 if Library.Bubble then
-                    Library.Bubble.Visible = true
+                    -- Route through the registered overlay's SetVisible
+                    -- (rather than setting .Visible directly) so that
+                    -- re-showing a bubble that was previously soft-removed
+                    -- via RemoveOverlay/RemoveAllOverlays re-registers it
+                    -- with the manager, same as every other overlay type.
+                    if Library.BubbleOverlay then
+                        Library.BubbleOverlay:SetVisible(true)
+                    else
+                        Library.Bubble.Visible = true
+                    end
                 else
                     -- Same as the initial creation path: make sure DPIScale
                     -- reflects the current viewport before the bubble's
@@ -12610,7 +12667,11 @@ function Library:CreateWindow(WindowInfo)
                 end
             else
                 if Library.Bubble then
-                    Library.Bubble.Visible = false
+                    if Library.BubbleOverlay then
+                        Library.BubbleOverlay:SetVisible(false)
+                    else
+                        Library.Bubble.Visible = false
+                    end
                 end
             end
 
