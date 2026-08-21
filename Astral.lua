@@ -2160,61 +2160,6 @@ function Library:GetNextOverlayPosition(): UDim2
     return UDim2.fromOffset(Offset, Offset)
 end
 
-function Library:GetSnappedOverlayPosition(PreferredPosition: UDim2, OverlaySize: Vector2): UDim2
-    -- Calculate a position that doesn't overlap with existing visible overlays
-    local ScreenSize = Workspace.CurrentCamera.ViewportSize
-    local Padding = 10 -- pixels between overlays
-    local StepSize = 20 -- pixels to step when finding non-overlapping position
-    
-    local function WouldOverlap(posX: number, posY: number, existingOverlay: any): boolean
-        local Root = existingOverlay.Holder or existingOverlay.Label or existingOverlay.Button or existingOverlay.Menu
-        if not Root or not Root.Parent or not Root.Visible then
-            return false
-        end
-        
-        local existingPos = Root.AbsolutePosition
-        local existingSize = Root.AbsoluteSize
-        
-        -- Check if the rectangles would overlap
-        return not (posX + OverlaySize.X + Padding < existingPos.X or
-                    posX > existingPos.X + existingSize.X + Padding or
-                    posY + OverlaySize.Y + Padding < existingPos.Y or
-                    posY > existingPos.Y + existingSize.Y + Padding)
-    end
-    
-    -- Start with preferred position
-    local baseX = PreferredPosition.X.Offset
-    local baseY = PreferredPosition.Y.Offset
-    
-    -- Try to find a non-overlapping position in a spiral pattern
-    for radius = 0, 10 do
-        for angle = 0, 360, 45 do
-            local radians = math.rad(angle)
-            local testX = baseX + math.cos(radians) * radius * StepSize
-            local testY = baseY + math.sin(radians) * radius * StepSize
-            
-            -- Ensure position is within screen bounds
-            testX = math.max(Padding, math.min(testX, ScreenSize.X - OverlaySize.X - Padding))
-            testY = math.max(Padding, math.min(testY, ScreenSize.Y - OverlaySize.Y - Padding))
-            
-            local hasOverlap = false
-            for _, overlay in Library:GetOverlays() do
-                if WouldOverlap(testX, testY, overlay) then
-                    hasOverlap = true
-                    break
-                end
-            end
-            
-            if not hasOverlap then
-                return UDim2.fromOffset(testX, testY)
-            end
-        end
-    end
-    
-    -- If we couldn't find a perfect spot, return the preferred position
-    return PreferredPosition
-end
-
 function Library:NextOverlayZIndex(): number
     -- Hands each overlay its OWN reserved band instead of every overlay
     -- sharing the single Library.OverlayZIndex constant. Call this once per
@@ -2288,11 +2233,12 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Table.Id = Id
     Table.OverlayType = OverlayType
     Table.OverlayName = Name or (OverlayType .. " #" .. Id)
-    
-    -- Store original position for position retention
+
+    -- Store the initial position to preserve it across remove/show cycles
     local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
     if Root then
         Table.__OriginalPosition = Root.Position
+        Table.__OriginalSize = Root.Size
     end
 
     if not Table.SetVisible then
@@ -2310,6 +2256,8 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     -- RemoveAllOverlays() / SetAllOverlaysVisible() see it again too,
     -- instead of leaving it permanently untracked after the first removal.
     --
+    -- Also preserve the overlay's position when showing it again after removal.
+    --
     -- Forwards ALL extra arguments (...) to BaseSetVisible, not just
     -- Visible -- ContextMenu's SetVisible(Visible, Force) relies on that
     -- second Force argument surviving this wrapper so SetAllOverlaysVisible
@@ -2322,20 +2270,17 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         if Visible and Library.Overlays[Id] ~= Table and not Table.__Destroyed then
             Library.Overlays[Id] = Table
             table.insert(Library.OverlaysOrder, Table)
-        end
-        
-        -- Call base SetVisible first
-        local result = BaseSetVisible(Table, Visible, ...)
-        
-        -- Restore original position after making visible (for draggable menus)
-        if Visible and Table.__OriginalPosition then
+            
+            -- Restore the original position when showing after removal
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-            if Root then
+            if Root and Table.__OriginalPosition then
                 Root.Position = Table.__OriginalPosition
             end
+            if Root and Table.__OriginalSize then
+                Root.Size = Table.__OriginalSize
+            end
         end
-        
-        return result
+        return BaseSetVisible(Table, Visible, ...)
     end
 
     if not Table.IsVisible then
@@ -2374,12 +2319,13 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     -- destroying means the SAME :Open()/:Toggle()/:SetVisible(true) calls
     -- the widget already makes will simply work again later.
     function Table:Remove()
-        -- Store current position before removing for position retention
+        -- Save the current position before hiding for restoration later
         local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
         if Root then
             Table.__OriginalPosition = Root.Position
+            Table.__OriginalSize = Root.Size
         end
-        
+
         if Library.Overlays[Id] == Table then
             Library.Overlays[Id] = nil
         end
@@ -2498,28 +2444,16 @@ function Library:AddDraggableLabel(Text: string)
     local OwningScreenGui = ScreenGui
     local BaseZIndex = Library:NextOverlayZIndex()
 
-    local PreferredPosition = Library:GetNextOverlayPosition()
     local Label = New("TextLabel", {
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = "BackgroundColor",
         Size = UDim2.fromOffset(0, 0),
-        Position = PreferredPosition,
+        Position = Library:GetNextOverlayPosition(),
         Text = Text,
         TextSize = 15,
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
-    
-    -- Apply snapping after the label is created and sized
-    task.spawn(function()
-        if Label and Label.Parent then
-            local finalSize = Label.AbsoluteSize
-            local snappedPosition = Library:GetSnappedOverlayPosition(PreferredPosition, finalSize)
-            Label.Position = snappedPosition
-            -- Update the stored original position for retention
-            Table.__OriginalPosition = snappedPosition
-        end
-    end)
     table.insert(
         Library.Corners,
         New("UICorner", {
@@ -2555,6 +2489,12 @@ function Library:AddDraggableLabel(Text: string)
             -- Library:SetOverlayVisible/GetOverlay once the Id is unregistered.
             return
         end
+        if Visible and Table.__OriginalPosition then
+            Label.Position = Table.__OriginalPosition
+        end
+        if Visible and Table.__OriginalSize then
+            Label.Size = Table.__OriginalSize
+        end
         Label.Visible = Visible
     end
 
@@ -2577,10 +2517,9 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
     local OwningScreenGui = ScreenGui
     local BaseZIndex = Library:NextOverlayZIndex()
 
-    local PreferredPosition = Library:GetNextOverlayPosition()
     local Button = New("TextButton", {
         BackgroundColor3 = "BackgroundColor",
-        Position = PreferredPosition,
+        Position = Library:GetNextOverlayPosition(),
         TextSize = 16,
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
@@ -2609,19 +2548,18 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
 
         Button.Text = Text
         Button.Size = UDim2.fromOffset(X * 2, Y * 2)
-        
-        -- Apply snapping after text is set and button is sized
-        local finalSize = Button.AbsoluteSize
-        local snappedPosition = Library:GetSnappedOverlayPosition(PreferredPosition, finalSize)
-        Button.Position = snappedPosition
-        -- Update the stored original position for retention
-        Table.__OriginalPosition = snappedPosition
     end
     Table:SetText(Text)
 
     function Table:SetVisible(Visible: boolean)
         if not Button.Parent then
             return
+        end
+        if Visible and Table.__OriginalPosition then
+            Button.Position = Table.__OriginalPosition
+        end
+        if Visible and Table.__OriginalSize then
+            Button.Size = Table.__OriginalSize
         end
         Button.Visible = Visible
     end
@@ -2644,26 +2582,14 @@ function Library:AddDraggableToggle(Text: string, Default: boolean?, Callback)
     local OwningScreenGui = ScreenGui
     local BaseZIndex = Library:NextOverlayZIndex()
 
-    local PreferredPosition = Library:GetNextOverlayPosition()
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = "BackgroundColor",
-        Position = PreferredPosition,
+        Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(0, 0),
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
-    
-    -- Apply snapping after the holder is created and sized
-    task.spawn(function()
-        if Holder and Holder.Parent then
-            local finalSize = Holder.AbsoluteSize
-            local snappedPosition = Library:GetSnappedOverlayPosition(PreferredPosition, finalSize)
-            Holder.Position = snappedPosition
-            -- Update the stored original position for retention
-            Table.__OriginalPosition = snappedPosition
-        end
-    end)
     table.insert(
         Library.Corners,
         New("UICorner", {
@@ -2756,25 +2682,13 @@ function Library:AddDraggableProgress(Text: string, Default: number?, Max: numbe
     local OwningScreenGui = ScreenGui
     local BaseZIndex = Library:NextOverlayZIndex()
 
-    local PreferredPosition = Library:GetNextOverlayPosition()
     local Holder = New("Frame", {
         BackgroundColor3 = "BackgroundColor",
-        Position = PreferredPosition,
+        Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(180, 44),
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
-    
-    -- Apply snapping after the holder is created
-    task.spawn(function()
-        if Holder and Holder.Parent then
-            local finalSize = Holder.AbsoluteSize
-            local snappedPosition = Library:GetSnappedOverlayPosition(PreferredPosition, finalSize)
-            Holder.Position = snappedPosition
-            -- Update the stored original position for retention
-            Table.__OriginalPosition = snappedPosition
-        end
-    end)
     table.insert(
         Library.Corners,
         New("UICorner", {
@@ -2874,26 +2788,14 @@ function Library:AddDraggableMenu(Name: string)
 
     local MaxWidth = 480
 
-    local PreferredPosition = Library:GetNextOverlayPosition()
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = "BackgroundColor",
-        Position = PreferredPosition,
+        Position = Library:GetNextOverlayPosition(),
         Size = UDim2.fromOffset(ResolvedWidth, 0),
         ZIndex = BaseZIndex,
         Parent = OwningScreenGui,
     })
-    
-    -- Apply snapping after the holder is created and sized
-    task.spawn(function()
-        if Holder and Holder.Parent then
-            local finalSize = Holder.AbsoluteSize
-            local snappedPosition = Library:GetSnappedOverlayPosition(PreferredPosition, finalSize)
-            Holder.Position = snappedPosition
-            -- Update the stored original position for retention
-            ContainerObj.__OriginalPosition = snappedPosition
-        end
-    end)
     local SizeConstraint = New("UISizeConstraint", {
 
         MaxSize = Vector2.new(MaxWidth, 800),
@@ -3106,7 +3008,6 @@ function Library:AddDraggableMenu(Name: string)
         Container = Container,
         Elements = {},
         ConditionalGroups = {},
-        __OriginalPosition = PreferredPosition, -- Store initial position for retention
     }
     function ContainerObj:Resize()
         RecalculateWidth()
@@ -3118,10 +3019,18 @@ function Library:AddDraggableMenu(Name: string)
     function ContainerObj:ToggleCollapsed()
         SetMenuCollapsed(not MenuCollapsed)
     end
-    -- SetVisible function (will be wrapped by RegisterOverlay)
+    function ContainerObj:Remove()
+        Holder:Destroy()
+    end
     function ContainerObj:SetVisible(Visible: boolean)
         if not Holder.Parent then
             return
+        end
+        if Visible and ContainerObj.__OriginalPosition then
+            Holder.Position = ContainerObj.__OriginalPosition
+        end
+        if Visible and ContainerObj.__OriginalSize then
+            Holder.Size = ContainerObj.__OriginalSize
         end
         Holder.Visible = Visible
         if Visible then
@@ -3131,9 +3040,6 @@ function Library:AddDraggableMenu(Name: string)
             BaseZIndex, FrontGeneration = Library:BringOverlayToFront(Holder, BaseZIndex, FrontGeneration)
         end
     end
-    
-    -- Don't define Remove - let RegisterOverlay provide the default (Root:Destroy)
-    -- which will then be wrapped to do soft remove
     function ContainerObj:IsVisible(): boolean
         return Holder.Parent ~= nil and Holder.Visible
     end
@@ -3254,39 +3160,29 @@ function Library:AddContextMenu(
     local function ComputeMenuPosition(): UDim2
         local RawOffset = typeof(Offset) == "function" and Offset() or Offset
 
-        local PreferredPosition
         if not MenuIsInScaledContainer then
             -- Fallback path: Menu has its own independent UIScale (only
             -- happens if Holder wasn't found inside any scaled container).
             -- Keep the original raw-absolute behavior here.
-            PreferredPosition = UDim2.fromOffset(
+            return UDim2.fromOffset(
                 math.floor(Holder.AbsolutePosition.X + RawOffset[1]),
                 math.floor(Holder.AbsolutePosition.Y + RawOffset[2])
             )
-        else
-            -- Menu shares Holder's UIScale (both live under ScaledContainer), so
-            -- convert Holder's screen-space AbsolutePosition into that
-            -- container's logical/pre-scale space before writing it into
-            -- Menu.Position -- same approach used for the search overlay.
-            local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
-            local ContainerAbsPos = ScaledContainer.AbsolutePosition
-            local RelativeX = (Holder.AbsolutePosition.X - ContainerAbsPos.X) / ScaleFactor
-            local RelativeY = (Holder.AbsolutePosition.Y - ContainerAbsPos.Y) / ScaleFactor
+        end
 
-            PreferredPosition = UDim2.fromOffset(
-                math.floor(RelativeX + RawOffset[1]),
-                math.floor(RelativeY + RawOffset[2])
-            )
-        end
-        
-        -- Apply snapping to avoid overlapping with other overlays
-        local menuSize = Menu.AbsoluteSize
-        if menuSize.X > 0 and menuSize.Y > 0 then
-            local snappedPosition = Library:GetSnappedOverlayPosition(PreferredPosition, menuSize)
-            return snappedPosition
-        end
-        
-        return PreferredPosition
+        -- Menu shares Holder's UIScale (both live under ScaledContainer), so
+        -- convert Holder's screen-space AbsolutePosition into that
+        -- container's logical/pre-scale space before writing it into
+        -- Menu.Position -- same approach used for the search overlay.
+        local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
+        local ContainerAbsPos = ScaledContainer.AbsolutePosition
+        local RelativeX = (Holder.AbsolutePosition.X - ContainerAbsPos.X) / ScaleFactor
+        local RelativeY = (Holder.AbsolutePosition.Y - ContainerAbsPos.Y) / ScaleFactor
+
+        return UDim2.fromOffset(
+            math.floor(RelativeX + RawOffset[1]),
+            math.floor(RelativeY + RawOffset[2])
+        )
     end
 
     function Table:Open(Force: boolean?)
@@ -3312,11 +3208,6 @@ function Library:AddContextMenu(
         if Table.Id and Library.Overlays[Table.Id] ~= Table then
             Library.Overlays[Table.Id] = Table
             table.insert(Library.OverlaysOrder, Table)
-            
-            -- Restore original position when opening again after removal
-            if Table.__OriginalPosition then
-                Menu.Position = Table.__OriginalPosition
-            end
         end
 
         -- Force (used by SetAllOverlaysVisible/"Show All Overlays") skips
@@ -3331,16 +3222,18 @@ function Library:AddContextMenu(
         end
         Table.Active = true
 
-        -- Store original position for retention if not already stored
-        if not Table.__OriginalPosition then
-            local computedPosition = ComputeMenuPosition()
-            Menu.Position = computedPosition
-            Table.__OriginalPosition = computedPosition
-        else
+        -- Restore the original position if it was saved during removal
+        if Table.__OriginalPosition then
             Menu.Position = Table.__OriginalPosition
+        else
+            Menu.Position = ComputeMenuPosition()
         end
         
-        Menu.Size = typeof(Table.Size) == "function" and Table.Size() or Table.Size
+        if Table.__OriginalSize then
+            Menu.Size = Table.__OriginalSize
+        else
+            Menu.Size = typeof(Table.Size) == "function" and Table.Size() or Table.Size
+        end
         if typeof(ActiveCallback) == "function" then
             Library:SafeCallback(ActiveCallback, true)
         end
@@ -9287,7 +9180,7 @@ function Library:CreateWindow(WindowInfo)
             BackgroundColor3 = "OutlineColor",
             Position = UDim2.fromOffset(InitialLeftWidth, 0),
             Size = UDim2.new(0, 1, 1, -20),
-            ZIndex = 3,
+            ZIndex = MainFrame.ZIndex + 1,
             Parent = MainFrame,
         })
 
@@ -9729,7 +9622,6 @@ function Library:CreateWindow(WindowInfo)
                 BorderSizePixel = 0,
                 LayoutOrder = 2,
                 Size = UDim2.new(1, 0, 0, 1),
-                ZIndex = Library.BaseZIndex + 1,
                 Parent = Sidebar,
             })
 
