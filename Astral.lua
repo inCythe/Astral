@@ -272,6 +272,7 @@ local Library = {
 
     Overlays = {},
     OverlaysOrder = {},
+    AllOverlays = {}, -- Track all overlays even after removal for re-showing
     OverlayIdCounter = 0,
     OverlayCascadeStep = 0,
 
@@ -2233,18 +2234,17 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Table.Id = Id
     Table.OverlayType = OverlayType
     Table.OverlayName = Name or (OverlayType .. " #" .. Id)
-
-    -- Store the initial position to preserve it across remove/show cycles
-    local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-    if Root then
-        Table.__OriginalPosition = Root.Position
-        Table.__OriginalSize = Root.Size
-    end
+    
+    -- Add to AllOverlays for permanent tracking (persists across remove/show cycles)
+    Library.AllOverlays[Id] = Table
+    -- Add to active tracking (removed by :Remove(), restored by :SetVisible(true))
+    Library.Overlays[Id] = Table
+    table.insert(Library.OverlaysOrder, Table)
 
     if not Table.SetVisible then
         function Table:SetVisible(Visible: boolean)
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-            if Root and Root.Parent then
+            if Root then
                 Root.Visible = Visible
             end
         end
@@ -2255,8 +2255,6 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     -- a soft :Remove(), re-register it with the manager so GetOverlays() /
     -- RemoveAllOverlays() / SetAllOverlaysVisible() see it again too,
     -- instead of leaving it permanently untracked after the first removal.
-    --
-    -- Also preserve the overlay's position when showing it again after removal.
     --
     -- Forwards ALL extra arguments (...) to BaseSetVisible, not just
     -- Visible -- ContextMenu's SetVisible(Visible, Force) relies on that
@@ -2270,15 +2268,10 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         if Visible and Library.Overlays[Id] ~= Table and not Table.__Destroyed then
             Library.Overlays[Id] = Table
             table.insert(Library.OverlaysOrder, Table)
-            
-            -- Restore the original position when showing after removal
-            local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-            if Root and Table.__OriginalPosition then
-                Root.Position = Table.__OriginalPosition
-            end
-            if Root and Table.__OriginalSize then
-                Root.Size = Table.__OriginalSize
-            end
+        end
+        -- Ensure overlay is always in AllOverlays when visible
+        if Visible and not Table.__Destroyed then
+            Library.AllOverlays[Id] = Table
         end
         return BaseSetVisible(Table, Visible, ...)
     end
@@ -2286,7 +2279,7 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     if not Table.IsVisible then
         function Table:IsVisible(): boolean
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-            return Root ~= nil and Root.Parent ~= nil and Root.Visible or false
+            return Root ~= nil and Root.Visible or false
         end
     end
 
@@ -2294,7 +2287,7 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         function Table:Remove()
             local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
             if Root then
-                Root:Destroy()
+                Root.Visible = false
             end
         end
     end
@@ -2319,13 +2312,6 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     -- destroying means the SAME :Open()/:Toggle()/:SetVisible(true) calls
     -- the widget already makes will simply work again later.
     function Table:Remove()
-        -- Save the current position before hiding for restoration later
-        local Root = Table.Holder or Table.Label or Table.Button or Table.Menu
-        if Root then
-            Table.__OriginalPosition = Root.Position
-            Table.__OriginalSize = Root.Size
-        end
-
         if Library.Overlays[Id] == Table then
             Library.Overlays[Id] = nil
         end
@@ -2336,6 +2322,9 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
                 break
             end
         end
+
+        -- Keep in AllOverlays for re-showing capability
+        Library.AllOverlays[Id] = Table
 
         if Table.SetVisible then
             pcall(Table.SetVisible, Table, false)
@@ -2366,6 +2355,9 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
             end
         end
 
+        -- Also remove from AllOverlays since this is permanent destruction
+        Library.AllOverlays[Id] = nil
+
         BaseRemove(Table)
     end
 
@@ -2376,7 +2368,8 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
 end
 
 function Library:GetOverlay(Id: number)
-    return Library.Overlays[Id]
+    -- Check both Overlays and AllOverlays to find overlays even after removal
+    return Library.Overlays[Id] or Library.AllOverlays[Id]
 end
 
 function Library:GetOverlays(OverlayType: string?)
@@ -2385,8 +2378,9 @@ function Library:GetOverlays(OverlayType: string?)
     -- iterating the result, and :Remove() mutates Library.OverlaysOrder in
     -- place. Handing back the live array meant table.remove() shifted
     -- indices mid-iteration and silently skipped every other entry.
+    -- Now uses AllOverlays to include overlays even after removal.
     local Result = {}
-    for _, Overlay in Library.OverlaysOrder do
+    for Id, Overlay in Library.AllOverlays do
         if not OverlayType or Overlay.OverlayType == OverlayType then
             table.insert(Result, Overlay)
         end
@@ -2418,7 +2412,11 @@ function Library:RemoveOverlay(Id: number)
 end
 
 function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
-    for _, Overlay in Library:GetOverlays(OverlayType) do
+    -- Use AllOverlays instead of GetOverlays to show overlays even after removal
+    for Id, Overlay in Library.AllOverlays do
+        if OverlayType and Overlay.OverlayType ~= OverlayType then
+            continue
+        end
         -- Force = true is passed through to every overlay's SetVisible.
         -- Non-ContextMenu overlay types just ignore the extra argument, but
         -- ContextMenu specifically needs it: context menus normally close
@@ -2433,7 +2431,11 @@ function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
 end
 
 function Library:RemoveAllOverlays(OverlayType: string?)
-    for _, Overlay in Library:GetOverlays(OverlayType) do
+    -- Use AllOverlays for consistency with SetAllOverlaysVisible
+    for Id, Overlay in Library.AllOverlays do
+        if OverlayType and Overlay.OverlayType ~= OverlayType then
+            continue
+        end
         Overlay:Remove()
     end
 end
@@ -2483,27 +2485,19 @@ function Library:AddDraggableLabel(Text: string)
     end
 
     function Table:SetVisible(Visible: boolean)
-        if not Label.Parent then
-            -- Instance already destroyed (overlay was removed). Silently
-            -- ignore instead of erroring, matching the behavior of
-            -- Library:SetOverlayVisible/GetOverlay once the Id is unregistered.
-            return
+        if Label then
+            Label.Visible = Visible
         end
-        if Visible and Table.__OriginalPosition then
-            Label.Position = Table.__OriginalPosition
-        end
-        if Visible and Table.__OriginalSize then
-            Label.Size = Table.__OriginalSize
-        end
-        Label.Visible = Visible
     end
 
     function Table:IsVisible(): boolean
-        return Label.Parent ~= nil and Label.Visible
+        return Label ~= nil and Label.Visible
     end
 
     function Table:Remove()
-        Label:Destroy()
+        if Label then
+            Label.Visible = false
+        end
     end
 
     Library:RegisterOverlay("DraggableLabel", Text, Table)
@@ -2555,21 +2549,17 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
         if not Button.Parent then
             return
         end
-        if Visible and Table.__OriginalPosition then
-            Button.Position = Table.__OriginalPosition
-        end
-        if Visible and Table.__OriginalSize then
-            Button.Size = Table.__OriginalSize
-        end
         Button.Visible = Visible
     end
 
     function Table:IsVisible(): boolean
-        return Button.Parent ~= nil and Button.Visible
+        return Button ~= nil and Button.Visible
     end
 
     function Table:Remove()
-        Button:Destroy()
+        if Button then
+            Button.Visible = false
+        end
     end
 
     Library:RegisterOverlay("DraggableButton", Text, Table)
@@ -3020,20 +3010,15 @@ function Library:AddDraggableMenu(Name: string)
         SetMenuCollapsed(not MenuCollapsed)
     end
     function ContainerObj:Remove()
-        Holder:Destroy()
+        if Holder then
+            Holder.Visible = false
+        end
     end
     function ContainerObj:SetVisible(Visible: boolean)
-        if not Holder.Parent then
-            return
+        if Holder then
+            Holder.Visible = Visible
         end
-        if Visible and ContainerObj.__OriginalPosition then
-            Holder.Position = ContainerObj.__OriginalPosition
-        end
-        if Visible and ContainerObj.__OriginalSize then
-            Holder.Size = ContainerObj.__OriginalSize
-        end
-        Holder.Visible = Visible
-        if Visible then
+        if Visible and Holder and Holder.Parent then
             -- Also bring to front on show, not just on drag/click, so
             -- re-opening a menu (e.g. toggling the Keybinds panel back on)
             -- reliably surfaces it above whatever else is currently open.
@@ -3041,7 +3026,7 @@ function Library:AddDraggableMenu(Name: string)
         end
     end
     function ContainerObj:IsVisible(): boolean
-        return Holder.Parent ~= nil and Holder.Visible
+        return Holder ~= nil and Holder.Visible
     end
     setmetatable(ContainerObj, BaseSection)
 
@@ -3186,12 +3171,6 @@ function Library:AddContextMenu(
     end
 
     function Table:Open(Force: boolean?)
-        if Removed then
-            -- Menu instance is destroyed; silently refuse instead of
-            -- erroring or writing properties onto a dead Instance.
-            return
-        end
-
         if CurrentMenu == Table then
             return
         elseif CurrentMenu and not Force then
@@ -3222,18 +3201,8 @@ function Library:AddContextMenu(
         end
         Table.Active = true
 
-        -- Restore the original position if it was saved during removal
-        if Table.__OriginalPosition then
-            Menu.Position = Table.__OriginalPosition
-        else
-            Menu.Position = ComputeMenuPosition()
-        end
-        
-        if Table.__OriginalSize then
-            Menu.Size = Table.__OriginalSize
-        else
-            Menu.Size = typeof(Table.Size) == "function" and Table.Size() or Table.Size
-        end
+        Menu.Position = ComputeMenuPosition()
+        Menu.Size = typeof(Table.Size) == "function" and Table.Size() or Table.Size
         if typeof(ActiveCallback) == "function" then
             Library:SafeCallback(ActiveCallback, true)
         end
@@ -3279,9 +3248,6 @@ function Library:AddContextMenu(
     end
 
     function Table:Toggle()
-        if Removed then
-            return
-        end
         if Table.Active then
             Table:Close()
         else
@@ -3303,15 +3269,16 @@ function Library:AddContextMenu(
     end
 
     function Table:IsVisible(): boolean
-        return Table.Active
+        return Table.Active and Menu ~= nil and Menu.Visible
     end
 
     function Table:Remove()
         if Removed then
             return
         end
-        Removed = true
-
+        -- Don't set Removed = true for soft remove - just hide the menu
+        -- The RegisterOverlay wrapper handles the manager bookkeeping
+        
         -- Always tear down the reposition signal, even if this menu wasn't
         -- the currently-open one — previously this only happened inside
         -- Close(), which early-outs when CurrentMenu ~= Table. That left the
@@ -3332,8 +3299,9 @@ function Library:AddContextMenu(
                 Library:SafeCallback(ActiveCallback, false)
             end
         end
-
-        Menu:Destroy()
+        
+        -- Hide the menu instead of destroying it for soft remove
+        Menu.Visible = false
     end
 
     Library:RegisterOverlay("ContextMenu", nil, Table)
