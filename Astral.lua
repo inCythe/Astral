@@ -119,11 +119,7 @@ do
         ForceRedownload: boolean?
     )
         if CustomImageManagerAssets[AssetName] ~= nil then
-            -- Was `error(...)`. AddAsset can run before any window/UI
-            -- exists (Library:Notify isn't available yet this early), and
-            -- nothing should ever print to the console -- so a duplicate
-            -- registration is now just silently ignored (first registration
-            -- wins) instead of halting execution with a console error.
+
             return
         end
 
@@ -277,70 +273,27 @@ local Library = {
 
     Overlays = {},
     OverlaysOrder = {},
-    AllOverlays = {}, -- Track all overlays even after removal for re-showing
+    AllOverlays = {},
     OverlayIdCounter = 0,
     OverlayCascadeStep = 0,
 
     Corners = {},
 
-    -- === ZIndex layering ===
-    -- Everything is stacked relative to one baseline instead of the old
-    -- scattered constants (window ~1, tooltip 20, bubble 500, overlays a
-    -- single shared 1500, cursor ~11000). BaseZIndex is the MINIMUM ZIndex
-    -- the main window uses; every other global layer is defined as an
-    -- offset from it, so the whole stack can be shifted together and the
-    -- ordering between layers is guaranteed instead of accidental.
-    --
-    -- Layer order (low to high): Window -> Bubble -> Tooltip -> DialogScrim
-    -- -> Overlays -> SearchOverlay -> DialogContent -> Cursor. Every layer
-    -- is a SMALL offset from BaseZIndex (tens/hundreds, not thousands) so
-    -- the whole stack stays in a tight, readable band instead of sprawling
-    -- up into the 12000-13000 range. Nothing here needs to be that high:
-    -- ZIndex only has to beat its siblings, not hit some arbitrary
-    -- "big enough" number.
-    --
-    -- DialogScrim/DialogContent are split into two separate layers on
-    -- purpose (not one "Dialog" band): the scrim is only a dimming
-    -- backdrop, so it sits BELOW the overlay band -- meaning any
-    -- already-open overlay (a draggable menu, the Keybinds panel, a
-    -- context menu) stays visibly undimmed and clickable while a dialog
-    -- is open, instead of getting darkened and blocked by the scrim.
-    -- DialogContent (the actual modal box) still sits above the overlay
-    -- band, because the dialog itself must stay usable/topmost while open.
     BaseZIndex = 999,
-    BubbleZIndexOffset = 1,       -- floats above the window, below everything else
-    TooltipZIndexOffset = 3,      -- always above window/bubble content
-    DialogScrimZIndexOffset = 5,  -- dark dimming backdrop, BELOW overlays
-    OverlayZIndexOffset = 6,      -- where the overlay band starts
+    BubbleZIndexOffset = 1,
+    TooltipZIndexOffset = 3,
+    DialogScrimZIndexOffset = 5,
+    OverlayZIndexOffset = 6,
 
-    -- Size of the ZIndex band handed to each individual overlay. Overlays
-    -- used to all share the exact same Library.OverlayZIndex constant, so
-    -- the "frame" and its "content" were miles apart in ZIndex (relying on
-    -- +1/+100 offsets that didn't compose) while DIFFERENT overlays used
-    -- the identical ZIndex and fought each other for stacking order. Now
-    -- each overlay gets its own reserved band of this size: its root frame
-    -- sits at the bottom of the band and its content sits exactly 1 above
-    -- it, with the next overlay starting a full band later so overlays
-    -- never overlap each other. Kept small (4) since each overlay only
-    -- ever nests 2-3 ZIndex levels deep (root/chrome/container).
     OverlayZIndexSlotSize = 4,
     OverlayZIndexCounter = 0,
 
-    -- Increments every time ANY overlay is brought to front (see
-    -- BringOverlayToFront). Whichever overlay most recently captured this
-    -- value is the current frontmost overlay -- used to skip redundant
-    -- ZIndex reassignment when something already-frontmost is clicked or
-    -- dragged again.
     OverlayFrontGeneration = 0,
 
-    -- How many overlay slots to budget for before the next named layer
-    -- (SearchOverlay) starts. 40 slots * 4 per slot = 160 -- comfortably
-    -- more concurrent overlays than the UI can ever actually have open at
-    -- once, while still keeping the numbers close together.
     OverlayZIndexBudget = 40,
-    SearchOverlayZIndexOffset = nil,  -- computed below, after OverlayZIndexBudget
-    DialogContentZIndexOffset = nil, -- computed below, after SearchOverlay's band
-    CursorZIndexOffset = nil,         -- computed below, always the topmost layer
+    SearchOverlayZIndexOffset = nil,
+    DialogContentZIndexOffset = nil,
+    CursorZIndexOffset = nil,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
@@ -398,52 +351,27 @@ local Library = {
     ShowCursorBinding = string.sub(tostring({}), 10),
 }
 
--- Derived ZIndex layers, computed from BaseZIndex/*Offset above. Kept as
--- real fields (not recomputed inline everywhere) so any code that reads
--- Library.OverlayZIndex/TooltipZIndex/BubbleZIndex/SearchOverlayZIndex/
--- DialogScrimZIndex/DialogContentZIndex/CursorZIndex sees a single source
--- of truth, and so shifting BaseZIndex later only requires updating this
--- one block. Each layer is derived from the END of the previous one (not
--- a big fixed jump), which is what keeps the whole stack packed into a
--- tight, close-together range instead of drifting up into the thousands.
 Library.TooltipZIndex = Library.BaseZIndex + Library.TooltipZIndexOffset
 Library.BubbleZIndex = Library.BaseZIndex + Library.BubbleZIndexOffset
 
--- DialogScrim sits between Tooltip and the overlay band -- above normal
--- window content (so it visibly dims the window behind a dialog) but
--- BELOW every overlay, so overlays stay undimmed/interactive on top of it.
 Library.DialogScrimZIndex = Library.BaseZIndex + Library.DialogScrimZIndexOffset
 
 Library.OverlayZIndex = Library.BaseZIndex + Library.OverlayZIndexOffset
 
--- End of the overlay band: the last ZIndex any single overlay could ever
--- reach, given OverlayZIndexBudget concurrent overlays each using up to
--- OverlayZIndexSlotSize levels.
 local OverlayBandEnd = Library.OverlayZIndex + (Library.OverlayZIndexBudget * Library.OverlayZIndexSlotSize)
 
--- SearchOverlay (the tab/setting search popup) always needs to sit above
--- every regular overlay, so it starts right after the overlay band ends.
--- It uses 2 levels internally (frame, then its scroll content).
 Library.SearchOverlayZIndexOffset = OverlayBandEnd - Library.BaseZIndex
 Library.SearchOverlayZIndex = Library.BaseZIndex + Library.SearchOverlayZIndexOffset
 local SearchOverlayBandEnd = Library.SearchOverlayZIndex + 2
 
--- DialogContent (the dialog's actual box: frame, header, body, footer
--- buttons) sits above SearchOverlay and the entire overlay band -- it's a
--- true modal and must stay usable/topmost while open, even though its own
--- dimming scrim (DialogScrimZIndex, above) sits UNDER the overlay band.
 Library.DialogContentZIndexOffset = (SearchOverlayBandEnd - Library.BaseZIndex)
 Library.DialogContentZIndex = Library.BaseZIndex + Library.DialogContentZIndexOffset
 local DialogContentBandEnd = Library.DialogContentZIndex + 4
 
--- Backwards-compatible alias: existing code/comments referring to
--- "Library.DialogZIndex" mean the dialog's content band specifically.
 Library.DialogZIndex = Library.DialogContentZIndex
 
--- Cursor is always the topmost layer, directly after DialogContent's band ends.
 Library.CursorZIndexOffset = (DialogContentBandEnd - Library.BaseZIndex) + 2
 Library.CursorZIndex = Library.BaseZIndex + Library.CursorZIndexOffset
-
 
 if RunService:IsStudio() then
     if UserInputService.TouchEnabled and not UserInputService.MouseEnabled then
@@ -1220,7 +1148,6 @@ function Library:SetDPIScale(DPIScale: number)
     DPIScale = math.clamp(tonumber(DPIScale) or 5, 1, 10)
     Library.UIScaleValue = DPIScale
 
-    -- Always recalculate BaseScale from the current viewport
     Library.BaseScale = Library:CalculateAutoBaseScale()
 
     local Multiplier = DPIScale / 5
@@ -1229,31 +1156,12 @@ function Library:SetDPIScale(DPIScale: number)
     Library.DPIValue = DPIScale
     Library.DPIScale = ScaleFactor
 
-    -- IMPORTANT:
-    -- MinSize NEVER changes with DPI. The logical UI dimensions remain
-    -- constant; only UIScale changes to make them fit the viewport.
     Library.MinSize = Library.OriginalMinSize
 
 	for _, UIScale in Library.Scales do
         UIScale.Scale = ScaleFactor - (tonumber(Library.ScalesOffset[UIScale]) or 0)
     end
 
-    -- Re-center the main window around its own midpoint whenever the scale
-    -- changes, so resizing via DPI/UI-scale doesn't leave the window
-    -- lopsided (growing/shrinking from its top-left corner, drifting off
-    -- one edge of the screen, etc).
-    --
-    -- This intentionally ignores Library.MainWindowWasMoved: that flag
-    -- exists to stop AUTOMATIC/passive re-centering (e.g. on viewport
-    -- resize) from fighting a window the user has manually dragged
-    -- somewhere else. But an explicit scale change is a deliberate action
-    -- the user just took -- centering the window around ITS OWN new size
-    -- at that moment is the expected, useful behavior every time, not a
-    -- one-shot "only before the user ever touches the window" behavior.
-    -- Without ignoring the flag here, dragging the window even once (very
-    -- likely, since it's the main window) would permanently disable
-    -- re-centering on every future scale change for the rest of the
-    -- session.
     if Library.MainFrame and Library.CenterMainWindow then
         local MainScaleFactor = (Library.MainWindowScale and Library.MainWindowScale.Scale) or ScaleFactor
         local ScaledWidth = Library.MainFrame.Size.X.Offset * MainScaleFactor
@@ -1275,23 +1183,6 @@ function Library:SetDPIScale(DPIScale: number)
         Library:SafeCallback(Callback, ScaleFactor)
     end
 
-    -- Keep the bubble snapped to its side, AND re-centered on its stored
-    -- relative anchor, after a scale change. Reuses the SAME SnapToSide the
-    -- drag-release magnet uses (confirmed working) instead of a separate
-    -- hand-rolled reimplementation. Deferred to next frame because
-    -- AbsoluteSize/AbsolutePosition (which SnapToSide reads) haven't
-    -- propagated through Roblox's UI layout engine yet this frame --
-    -- reading them synchronously right after the UIScale.Scale write above
-    -- would still report the OLD pre-scale-change size.
-    --
-    -- Passing PreserveRelativeY = true here is what actually fixes the
-    -- "bubble drifts/jumps when AutoDPIScale changes" bug: without it,
-    -- SnapToSide would clamp the bubble's stale, pre-scale AbsolutePosition
-    -- against the NEW rendered size, which is a different point on screen
-    -- proportionally (visibly "climbing" toward the top as the bubble
-    -- shrinks, for example). With it, SnapToSide re-derives Y purely from
-    -- the stored 0-1 ratio and the current size, so the bubble always ends
-    -- up in the exact same relative spot no matter how the scale changed.
     if Library.Bubble and Library.Bubble.Parent and Library.SnapBubbleToSide then
         local BubbleToSnap = Library.Bubble
         local SideToSnap = Library.BubbleSide or "Right"
@@ -1673,16 +1564,7 @@ function Library:NewTrackedScale(Parent: Instance, Offset: number?)
 end
 
 function Library:FindScaledContainer(UI: Instance): GuiObject?
-    -- Walks up UI's ancestor chain and returns the nearest ancestor that
-    -- already has its own UIScale child (e.g. MainFrame, or a Loading
-    -- screen's own frame). Used so a new overlay/menu can be parented
-    -- UNDER that same container and inherit its UIScale directly, instead
-    -- of getting an independent UIScale of its own at the ScreenGui root.
-    -- Two independently-scaled trees trying to stay visually aligned via
-    -- hand-written AbsolutePosition math is exactly what caused the search
-    -- overlay (and now these overlays) to drift at non-default UI scale --
-    -- sharing one UIScale node removes the problem structurally instead of
-    -- patching the math.
+
     local Current = UI and UI.Parent
     while Current and Current ~= game do
         if Current:IsA("GuiObject") and Current:FindFirstChildOfClass("UIScale") then
@@ -1743,11 +1625,7 @@ local ScreenGui = New("ScreenGui", {
     DisplayOrder = 998,
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Global,
-    -- Without this, Roblox reserves ~36px at the top of the screen for the
-    -- default topbar and treats THAT reduced area as "the screen" for any
-    -- 0.5/0.5 scale positioning -- so MainFrame's centering math (which
-    -- assumes it's centering within the full viewport) ends up visibly
-    -- offset toward the top, with a larger gap at the bottom than the top.
+
     IgnoreGuiInset = true,
 })
 ParentUI(ScreenGui)
@@ -1769,9 +1647,7 @@ local ModalElement = New("TextButton", {
 
 local Cursor, CursorCustomImage
 do
-    -- Cursor sits at the very top of the stack (Library.CursorZIndex),
-    -- always above tooltips/overlays/the window. Its own children (shadow
-    -- strokes under the crosshair lines) sit exactly 1 below that.
+
     local CursorZIndex = Library.CursorZIndex
     Cursor = New("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -1826,10 +1702,7 @@ do
         BackgroundTransparency = 1,
         Position = UDim2.new(1, -6, 0, 6),
         Size = UDim2.new(0, 300, 1, -6),
-        -- Previously unset (defaulted to ZIndex 1), so notifications
-        -- silently rendered BEHIND the main window once MainFrame got an
-        -- explicit baseline ZIndex. Notifications should always be visible
-        -- above the window, so anchor them just above the tooltip layer.
+
         ZIndex = Library.TooltipZIndex + 1,
         Parent = ScreenGui,
     })
@@ -1929,15 +1802,7 @@ function Library:SafeCallback(Func: (...any) -> ...any, ...: any)
     end
 
     local Result = table.pack(xpcall(Func, function(Error)
-        -- Previously also did `task.defer(error, debug.traceback(Error, 2))`
-        -- here, which deliberately re-raises the error a frame later purely
-        -- to print it (with a traceback) to the console/output -- on EVERY
-        -- callback error anywhere in the library (toggles, buttons,
-        -- sliders, keypickers, etc). Nothing should ever print to the
-        -- console, so that re-raise is gone; the notification below is now
-        -- the only surface for callback errors, and always fires
-        -- (not gated behind Library.NotifyOnError) so an error is never
-        -- silently swallowed with no visible feedback at all.
+
         Library:Notify(Error)
 
         return Error
@@ -1994,12 +1859,7 @@ function Library:MakeDraggable(UI: GuiObject, DragFrame: GuiObject, IgnoreToggle
             or not (OwningScreenGui and OwningScreenGui.Parent)
             or not UI.Visible
         then
-            -- Also bail out (and cancel any in-progress drag) once the UI is
-            -- hidden. Without this, hiding an overlay mid-drag left Dragging
-            -- latched true; the very next time it was shown again, an
-            -- unrelated InputChanged could still be "mid-drag" from the
-            -- stale StartPos/FramePos captured before it was hidden, causing
-            -- it to visibly jump/offset the instant it reappeared.
+
             Dragging = false
             if Changed and Changed.Connected then
                 Changed:Disconnect()
@@ -2157,63 +2017,22 @@ function Library:MakeOutline(Frame: GuiObject, Corner: number?, ZIndex: number?)
 end
 
 function Library:GetNextOverlayPosition(): UDim2
-    -- Every draggable overlay used to spawn at a hardcoded UDim2.fromOffset(6, 6).
-    -- That's not a "drift" bug per call, but it means the 2nd, 3rd, 4th... overlay
-    -- you create/show all land in exactly the same spot, stacked directly on top
-    -- of one another, which reads as "wrong position" / "offset" once you have
-    -- more than one on screen. Cascade each new one by a small step instead.
+
     local Step = Library.OverlayCascadeStep
-    Library.OverlayCascadeStep = (Step + 1) % 8 -- wrap so it doesn't walk off-screen
+    Library.OverlayCascadeStep = (Step + 1) % 8
     local Offset = 6 + (Step * 18)
     return UDim2.fromOffset(Offset, Offset)
 end
 
 function Library:NextOverlayZIndex(): number
-    -- Hands each overlay its OWN reserved band instead of every overlay
-    -- sharing the single Library.OverlayZIndex constant. Call this once per
-    -- overlay, before building its instances, and use the returned value as
-    -- that overlay's local "BaseZIndex" (root frame = BaseZIndex, its
-    -- immediate content = BaseZIndex + 1, etc). The next overlay created
-    -- starts a full OverlayZIndexSlotSize later, so two overlays can never
-    -- land on the same ZIndex no matter how many layered children either
-    -- one has (as long as it stays within the slot size).
-    --
-    -- Wraps back to slot 0 once OverlayZIndexBudget is exhausted, instead
-    -- of counting up forever. BringOverlayToFront (below) can call this
-    -- repeatedly over a long session (bringing overlays to front on every
-    -- show/drag), so without a wraparound the counter would eventually
-    -- exceed the reserved band and collide with SearchOverlay/Dialog.
-    -- Wrapping is safe here: once slot 0 is handed out again, that overlay
-    -- simply becomes the new "oldest" and everything else still stacks
-    -- correctly above it, exactly like a real window manager's Z-order.
+
     local Slot = Library.OverlayZIndexCounter % Library.OverlayZIndexBudget
     Library.OverlayZIndexCounter += 1
     return Library.OverlayZIndex + (Slot * Library.OverlayZIndexSlotSize)
 end
 
 function Library:BringOverlayToFront(RootInstance: GuiObject, OldBaseZIndex: number, OldFrontGeneration: number?)
-    -- Overlays get a permanent ZIndex band at CREATION time (see
-    -- NextOverlayZIndex). That's fine for stacking order between overlays
-    -- that never interact, but it means an overlay created early (like the
-    -- Keybinds panel, built once during CreateWindow before any user
-    -- overlay exists) is PERMANENTLY stuck at the bottom of the overlay
-    -- band -- every overlay spawned afterward visually sits on top of it
-    -- forever, even if the early one is the one currently being shown or
-    -- dragged. That reads as "it's not really an overlay", since real
-    -- overlays are expected to come to front on interaction.
-    --
-    -- This reassigns RootInstance's entire band to a FRESH slot at the
-    -- current top of the overlay band, shifting every descendant by the
-    -- same delta so their relative order within the overlay is preserved.
-    -- Call this whenever an overlay should visually come to front: when
-    -- it's shown, and/or when the user starts dragging it.
-    --
-    -- Already-frontmost check: Library.OverlayFrontGeneration increments
-    -- every time ANY overlay is brought to front, and the current holder
-    -- of the highest generation is already visually frontmost. Skipping
-    -- the reassignment in that case means repeatedly clicking/dragging the
-    -- SAME already-frontmost overlay doesn't keep burning fresh slots (and
-    -- fresh calls to NextOverlayZIndex) for no visual change.
+
     if OldFrontGeneration ~= nil and OldFrontGeneration == Library.OverlayFrontGeneration then
         return OldBaseZIndex, OldFrontGeneration
     end
@@ -2241,10 +2060,9 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
     Table.Id = Id
     Table.OverlayType = OverlayType
     Table.OverlayName = Name or (OverlayType .. " #" .. Id)
-    
-    -- Add to AllOverlays for permanent tracking (persists across remove/show cycles)
+
     Library.AllOverlays[Id] = Table
-    -- Add to active tracking (removed by :Remove(), restored by :SetVisible(true))
+
     Library.Overlays[Id] = Table
     table.insert(Library.OverlaysOrder, Table)
 
@@ -2257,26 +2075,13 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         end
     end
 
-    -- Wrap whatever SetVisible ends up being (type-specific or the generic
-    -- fallback above): if something makes this overlay visible again after
-    -- a soft :Remove(), re-register it with the manager so GetOverlays() /
-    -- RemoveAllOverlays() / SetAllOverlaysVisible() see it again too,
-    -- instead of leaving it permanently untracked after the first removal.
-    --
-    -- Forwards ALL extra arguments (...) to BaseSetVisible, not just
-    -- Visible -- ContextMenu's SetVisible(Visible, Force) relies on that
-    -- second Force argument surviving this wrapper so SetAllOverlaysVisible
-    -- can bypass context menus' single-open-at-a-time exclusivity. Dropping
-    -- extra args here would silently break that for every overlay type,
-    -- not just ContextMenu, since every overlay's SetVisible gets wrapped
-    -- through this same function.
     local BaseSetVisible = Table.SetVisible
     function Table:SetVisible(Visible: boolean, ...)
         if Visible and Library.Overlays[Id] ~= Table and not Table.__Destroyed then
             Library.Overlays[Id] = Table
             table.insert(Library.OverlaysOrder, Table)
         end
-        -- Ensure overlay is always in AllOverlays when visible
+
         if Visible and not Table.__Destroyed then
             Library.AllOverlays[Id] = Table
         end
@@ -2299,25 +2104,8 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         end
     end
 
-    -- BaseRemove is whatever type-specific teardown the overlay defined
-    -- (or the generic Root:Destroy() fallback above). We no longer call it
-    -- directly on a normal :Remove() -- see below.
     local BaseRemove = Table.Remove
 
-    -- "Soft remove": hides the overlay and detaches it from the manager's
-    -- bookkeeping (Overlays/OverlaysOrder, so GetOverlays/RemoveAllOverlays
-    -- won't see it again) WITHOUT destroying its underlying Instance. This
-    -- is what RemoveOverlay/RemoveAllOverlays use.
-    --
-    -- Previously :Remove() destroyed the root Instance outright. That's
-    -- fine for one-off overlays (draggable labels/buttons), but overlays
-    -- like context menus are handed out ONCE and held onto forever by
-    -- whatever widget created them (a dropdown, a color picker, ...), which
-    -- just calls :Open()/:Toggle() on the same table for the rest of the
-    -- widget's life. Destroying the Instance permanently bricked that
-    -- widget's popup with no way to get it back. Hiding instead of
-    -- destroying means the SAME :Open()/:Toggle()/:SetVisible(true) calls
-    -- the widget already makes will simply work again later.
     function Table:Remove()
         if Library.Overlays[Id] == Table then
             Library.Overlays[Id] = nil
@@ -2330,7 +2118,6 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
             end
         end
 
-        -- Keep in AllOverlays for re-showing capability
         Library.AllOverlays[Id] = Table
 
         if Table.SetVisible then
@@ -2338,10 +2125,6 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
         end
     end
 
-    -- True, permanent destruction (Instance:Destroy() and friends). Only
-    -- the library's own Unload() path (or code that genuinely never wants
-    -- this overlay again) should call this -- everyday cleanup should use
-    -- :Remove() above instead.
     function Table:Destroy()
         if Table.__Destroyed then
             return
@@ -2362,7 +2145,6 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
             end
         end
 
-        -- Also remove from AllOverlays since this is permanent destruction
         Library.AllOverlays[Id] = nil
 
         BaseRemove(Table)
@@ -2375,17 +2157,12 @@ function Library:RegisterOverlay(OverlayType: string, Name: string?, Table: { [a
 end
 
 function Library:GetOverlay(Id: number)
-    -- Check both Overlays and AllOverlays to find overlays even after removal
+
     return Library.Overlays[Id] or Library.AllOverlays[Id]
 end
 
 function Library:GetOverlays(OverlayType: string?)
-    -- Always return a shallow copy. Callers (SetAllOverlaysVisible,
-    -- RemoveAllOverlays, or user code) frequently call :Remove() while
-    -- iterating the result, and :Remove() mutates Library.OverlaysOrder in
-    -- place. Handing back the live array meant table.remove() shifted
-    -- indices mid-iteration and silently skipped every other entry.
-    -- Now uses AllOverlays to include overlays even after removal.
+
     local Result = {}
     for Id, Overlay in Library.AllOverlays do
         if not OverlayType or Overlay.OverlayType == OverlayType then
@@ -2419,26 +2196,18 @@ function Library:RemoveOverlay(Id: number)
 end
 
 function Library:SetAllOverlaysVisible(Visible: boolean, OverlayType: string?)
-    -- Use AllOverlays instead of GetOverlays to show overlays even after removal
+
     for Id, Overlay in Library.AllOverlays do
         if OverlayType and Overlay.OverlayType ~= OverlayType then
             continue
         end
-        -- Force = true is passed through to every overlay's SetVisible.
-        -- Non-ContextMenu overlay types just ignore the extra argument, but
-        -- ContextMenu specifically needs it: context menus normally close
-        -- one another on Open() to enforce "only one open at a time" for
-        -- real click-driven interaction, which meant a bulk "show all"
-        -- call used to just cycle through them and leave only the last one
-        -- visible. Force skips that exclusivity so a deliberate "show every
-        -- overlay that exists" call actually shows every overlay that
-        -- exists, context menus included.
+
         Overlay:SetVisible(Visible, true)
     end
 end
 
 function Library:RemoveAllOverlays(OverlayType: string?)
-    -- Use AllOverlays for consistency with SetAllOverlaysVisible
+
     for Id, Overlay in Library.AllOverlays do
         if OverlayType and Overlay.OverlayType ~= OverlayType then
             continue
@@ -2762,21 +2531,11 @@ function Library:AddDraggableMenu(Name: string)
     local OwningScreenGui = ScreenGui
 
     local MenuWidth = 220
-    -- Own reserved band (see NextOverlayZIndex) instead of the old shared
-    -- Library.OverlayZIndex constant, so this menu can't collide with any
-    -- other overlay. Within the band: Holder (root) = BaseZIndex, all
-    -- title-bar chrome = BaseZIndex + 1, and the scrollable Container (plus
-    -- whatever content gets dropped into it, which inherits ZIndex from
-    -- Container automatically via New()) = BaseZIndex + 2. That replaces
-    -- the old "Container.ZIndex = BaseZIndex + 100" arbitrary jump with a
-    -- single, tight gap.
+
     local BaseZIndex = Library:NextOverlayZIndex()
     local ChromeZIndex = BaseZIndex + 1
     local ContainerZIndex = BaseZIndex + 2
 
-    -- Tracks whether this specific menu is the current frontmost overlay
-    -- (see BringOverlayToFront) so repeated clicks/drags/shows on an
-    -- already-frontmost menu don't keep burning fresh ZIndex slots.
     local FrontGeneration: number? = nil
 
     local ControlsWidth = 62
@@ -2918,16 +2677,6 @@ function Library:AddDraggableMenu(Name: string)
         Parent = Container,
     })
 
-    -- Measures the widest direct child of Container (each child is expected
-    -- to be AutomaticSize.X, so AbsoluteSize.X reflects its natural width)
-    -- and grows/shrinks Holder to fit it, clamped between the title-derived
-    -- ResolvedWidth and MaxWidth.
-    --
-    -- IMPORTANT: Holder has a UIScale on it (see NewTrackedScale below), so
-    -- Child.AbsoluteSize is already in SCREEN space (post-UIScale). Holder.Size
-    -- is logical/BASE space (pre-UIScale). We must divide by the current scale
-    -- factor before writing the measured width back into Holder.Size, or the
-    -- UIScale will be applied to it a second time.
     local ResizeQueued = false
     local function RecalculateWidth()
         local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
@@ -2970,10 +2719,6 @@ function Library:AddDraggableMenu(Name: string)
     end)
     Container.ChildRemoved:Connect(QueueResize)
 
-    -- ZIndex is already set to ContainerZIndex at creation time above; no
-    -- need to re-stamp it here (previously this overwrote it with the
-    -- arbitrary BaseZIndex + 100 jump).
-
     local MenuCollapsed = false
     local function SetMenuCollapsed(Collapsed: boolean)
         MenuCollapsed = Collapsed
@@ -2987,12 +2732,6 @@ function Library:AddDraggableMenu(Name: string)
 
     Library:MakeDraggable(Holder, LabelHolder, true)
 
-    -- Bring this menu to the front of the overlay stack whenever the user
-    -- starts interacting with its title bar (drag or click) -- otherwise
-    -- an early-created menu (e.g. the Keybinds panel, built once during
-    -- CreateWindow) would be permanently stuck under every overlay created
-    -- afterward, unable to ever visually come to front like a normal
-    -- overlay is expected to.
     LabelHolder.InputBegan:Connect(function(Input: InputObject)
         if not IsClickInput(Input) then
             return
@@ -3026,9 +2765,7 @@ function Library:AddDraggableMenu(Name: string)
             Holder.Visible = Visible
         end
         if Visible and Holder and Holder.Parent then
-            -- Also bring to front on show, not just on drag/click, so
-            -- re-opening a menu (e.g. toggling the Keybinds panel back on)
-            -- reliably surfaces it above whatever else is currently open.
+
             BaseZIndex, FrontGeneration = Library:BringOverlayToFront(Holder, BaseZIndex, FrontGeneration)
         end
     end
@@ -3039,12 +2776,6 @@ function Library:AddDraggableMenu(Name: string)
 
     Library:RegisterOverlay("DraggableMenu", Name, ContainerObj)
 
-    -- IMPORTANT: route the close button through ContainerObj:Remove() (which
-    -- is now the RegisterOverlay-wrapped version) instead of destroying the
-    -- Holder directly. Destroying it directly would leave a ghost entry in
-    -- Library.Overlays / Library.OverlaysOrder pointing at a destroyed
-    -- instance, breaking GetOverlays/SetAllOverlaysVisible/RemoveAllOverlays
-    -- and permanently orphaning that Id.
     CloseBtn.MouseButton1Click:Connect(function()
         ContainerObj:Remove()
     end)
@@ -3052,25 +2783,13 @@ function Library:AddDraggableMenu(Name: string)
     return Holder, Container, ContainerObj
 end
 
--- Right-clicking (MouseButton2Click) has no equivalent on touch devices --
--- there's no secondary mouse button to press -- so anything that's only
--- wired to MouseButton2Click (context menus, KeyPicker mode menu, ColorPicker
--- copy/paste menu, etc.) is completely unreachable on mobile. This wires up
--- GuiObject.TouchLongPress (Roblox's native long-press gesture, distinct
--- from a normal tap) as a drop-in substitute: hold your finger on the
--- element for a moment and it fires the same Func a right click would.
--- Desktop/mouse behavior is untouched -- this only adds a Touch path.
 function Library:AddLongPressAsRightClick(GuiObject: GuiObject, Func: () -> ())
     if not GuiObject or typeof(Func) ~= "function" then
         return
     end
 
     return Library:GiveSignal(GuiObject.TouchLongPress:Connect(function(_, State)
-        -- TouchLongPress fires multiple times across the gesture's
-        -- lifecycle (Enum.UserInputState: Begin, Change, End, Cancel).
-        -- Only react once, when the press is actually recognized as
-        -- "long enough", not on every intermediate update -- otherwise
-        -- Func could run several times per single hold.
+
         if State == Enum.UserInputState.Begin then
             Func()
         end
@@ -3088,18 +2807,8 @@ function Library:AddContextMenu(
 )
     local Menu
 
-    -- Own reserved band, same as every other overlay type -- guarantees
-    -- this context menu can't land on the same ZIndex as another context
-    -- menu, a draggable label/button/toggle/progress/menu, etc, no matter
-    -- how many of each are alive at once.
     local BaseZIndex = Library:NextOverlayZIndex()
 
-    -- Parent the menu under the SAME scaled container Holder lives in
-    -- (normally MainFrame, or the Loading screen's frame) rather than at
-    -- the ScreenGui root with its own separate UIScale. This mirrors the
-    -- fix applied to the search overlay: one shared UIScale means Open()
-    -- below can use plain relative math instead of independently
-    -- reconciling two scale factors.
     local ScaledContainer = Library:FindScaledContainer(Holder)
     local ParentGui = ScaledContainer
     if not ParentGui then
@@ -3133,9 +2842,7 @@ function Library:AddContextMenu(
             Parent = ParentGui,
         })
     end
-    -- Only give Menu its own independent UIScale if it did NOT land inside
-    -- a container that already has one -- otherwise this would recreate the
-    -- exact two-scale-node problem we just avoided by parenting it there.
+
     local MenuIsInScaledContainer = ScaledContainer ~= nil
     if not MenuIsInScaledContainer then
         Library:NewTrackedScale(Menu)
@@ -3178,19 +2885,13 @@ function Library:AddContextMenu(
         local RawOffset = typeof(Offset) == "function" and Offset() or Offset
 
         if not MenuIsInScaledContainer then
-            -- Fallback path: Menu has its own independent UIScale (only
-            -- happens if Holder wasn't found inside any scaled container).
-            -- Keep the original raw-absolute behavior here.
+
             return UDim2.fromOffset(
                 math.floor(Holder.AbsolutePosition.X + RawOffset[1]),
                 math.floor(Holder.AbsolutePosition.Y + RawOffset[2])
             )
         end
 
-        -- Menu shares Holder's UIScale (both live under ScaledContainer), so
-        -- convert Holder's screen-space AbsolutePosition into that
-        -- container's logical/pre-scale space before writing it into
-        -- Menu.Position -- same approach used for the search overlay.
         local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
         local ContainerAbsPos = ScaledContainer.AbsolutePosition
         local RelativeX = (Holder.AbsolutePosition.X - ContainerAbsPos.X) / ScaleFactor
@@ -3209,25 +2910,11 @@ function Library:AddContextMenu(
             CurrentMenu:Close()
         end
 
-        -- If this menu was soft-removed (RemoveOverlay/RemoveAllOverlays)
-        -- since it was created, it's no longer tracked in
-        -- Library.Overlays/OverlaysOrder. Re-register it here so
-        -- GetOverlays/RemoveAllOverlays/SetAllOverlaysVisible see it again
-        -- instead of it staying permanently untracked after the first
-        -- removal, even though (per the fix above) it's still perfectly
-        -- capable of opening.
         if Table.Id and Library.Overlays[Table.Id] ~= Table then
             Library.Overlays[Table.Id] = Table
             table.insert(Library.OverlaysOrder, Table)
         end
 
-        -- Force (used by SetAllOverlaysVisible/"Show All Overlays") skips
-        -- the single-global-menu exclusivity above, so multiple context
-        -- menus can be shown at once for inspection/demo purposes. It
-        -- deliberately does NOT reassign CurrentMenu in that case: real
-        -- click-driven Open() calls (Force absent) should still only ever
-        -- compete with whatever the user is ACTUALLY interacting with, not
-        -- with something a bulk "show all" call left open.
         if not Force then
             CurrentMenu = Table
         end
@@ -3241,8 +2928,6 @@ function Library:AddContextMenu(
 
         Menu.Visible = true
 
-        -- Guard against a stray leftover connection from a previous Open()
-        -- call that never got cleaned up (see Close()/Remove() below).
         if Table.Signal then
             Table.Signal:Disconnect()
             Table.Signal = nil
@@ -3259,12 +2944,6 @@ function Library:AddContextMenu(
             Table.Signal = nil
         end
 
-        -- Force-opened menus (see Open(Force)) never became CurrentMenu, so
-        -- the old "if CurrentMenu ~= Table then return" guard would refuse
-        -- to close them at all -- meaning "Hide All Overlays" couldn't hide
-        -- a context menu that "Show All Overlays" had force-opened. Close
-        -- unconditionally instead; only clear/callback the CurrentMenu
-        -- bookkeeping when this menu actually IS the tracked current one.
         if not Table.Active then
             return
         end
@@ -3308,16 +2987,7 @@ function Library:AddContextMenu(
         if Removed then
             return
         end
-        -- Don't set Removed = true for soft remove - just hide the menu
-        -- The RegisterOverlay wrapper handles the manager bookkeeping
-        
-        -- Always tear down the reposition signal, even if this menu wasn't
-        -- the currently-open one — previously this only happened inside
-        -- Close(), which early-outs when CurrentMenu ~= Table. That left the
-        -- AbsolutePosition connection alive on a destroyed Menu instance,
-        -- and if Holder got reused by a later context menu, the leaked
-        -- signal would keep firing and fighting the new menu's own
-        -- positioning whenever Holder moved.
+
         if Table.Signal then
             Table.Signal:Disconnect()
             Table.Signal = nil
@@ -3331,8 +3001,7 @@ function Library:AddContextMenu(
                 Library:SafeCallback(ActiveCallback, false)
             end
         end
-        
-        -- Hide the menu instead of destroying it for soft remove
+
         Menu.Visible = false
     end
 
@@ -3377,19 +3046,7 @@ New("UIPadding", {
     PaddingTop = UDim.new(0, 2),
     Parent = TooltipLabel,
 })
--- No independent UIScale on TooltipLabel anymore -- same bug class as the
--- old SearchOverlay/ContextMenu. TooltipLabel gets reparented at hover-time
--- to whichever container is showing it (see DoHover below), and its
--- Position is driven off raw Mouse.X/Y. Giving it its own UIScale while
--- also living under a differently-scaled ancestor (MainFrame, a Dialog,
--- the loading screen's frame) is two independently-scaled trees again, and
--- would need the same manual ScaleFactor conversion that this code never
--- actually did. Instead TooltipLabel is parented under the nearest ancestor
--- of HoverInstance that already owns a UIScale (falling back to the owning
--- ScreenGui when nothing better is found, same fallback FindScaledContainer
--- callers use elsewhere), and Position is computed relative to THAT
--- container in its own logical (pre-scale) space -- so there's only ever
--- one shared scale node between the tooltip and whatever it's attached to.
+
 local FallbackTooltipScale = New("UIScale", {
     Parent = TooltipLabel,
 })
@@ -3440,10 +3097,6 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
         end
         CurrentHoverInstance = HoverInstance
 
-        -- Find the nearest ancestor of HoverInstance that already owns a
-        -- UIScale (MainFrame, a Dialog's frame, the loading screen's frame,
-        -- etc.) and share that scale instead of always going to the
-        -- top-level ScreenGui with an independent one.
         local ScaledContainer = Library:FindScaledContainer(HoverInstance)
 
         local ParentGui = HoverInstance:FindFirstAncestorOfClass("ScreenGui")
@@ -3472,14 +3125,7 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
             local OffsetY = Mouse.Y + (Library.ShowCustomCursor and 8 or 12)
 
             if ScaledContainer then
-                -- Mouse.X/Y is raw screen space. ScaledContainer's own
-                -- content is laid out in its logical (pre-scale) space, so
-                -- convert: subtract the container's screen-space origin,
-                -- then divide by the scale factor that container's UIScale
-                -- is currently applying -- the same relative-space math the
-                -- search overlay and context menus use, rather than writing
-                -- raw screen pixels into a Position that's being read back
-                -- through that container's UIScale.
+
                 local ScaleInst = ScaledContainer:FindFirstChildOfClass("UIScale")
                 local Factor = (ScaleInst and ScaleInst.Scale ~= 0) and ScaleInst.Scale or 1
                 local ContainerOrigin = ScaledContainer.AbsolutePosition
@@ -3660,12 +3306,6 @@ do
             end
         end
 
-        -- KeyPicker.Mode was captured from Info.Mode BEFORE the two blocks
-        -- above could correct/override Info.Mode (forcing "Press", or
-        -- falling back to "Toggle" when SyncToggleState's mode isn't in the
-        -- allowed Modes list). Without resyncing here, KeyPicker.Mode keeps
-        -- pointing at the pre-correction value, which then desyncs from
-        -- which ModeButton actually gets selected below.
         KeyPicker.Mode = Info.Mode
 
         local Picking = false
@@ -3946,23 +3586,7 @@ do
             end
 
             function ModeButton:Deselect()
-                -- IMPORTANT: this must NOT touch KeyPicker.Mode. KeyPicker.Mode
-                -- is one shared field on the KeyPicker table, not something
-                -- scoped per-button -- every ModeButton created in the loop
-                -- below calls Deselect() on itself at construction time unless
-                -- it happens to be the currently-selected mode. Before this
-                -- fix, Deselect() unconditionally set KeyPicker.Mode = nil, so
-                -- the LAST mode button constructed (not necessarily the
-                -- Default mode) silently won and often left KeyPicker.Mode as
-                -- nil entirely. That nil Mode then flows into SetValue() as
-                -- Mode = Mode or KeyPicker.Mode (still nil), ModeButtons[nil]
-                -- is nil so nothing reselects, GetState()'s Mode branches all
-                -- fall through, and the picker looks "stuck"/broken -- which
-                -- is what the "keypicker doing None" reports were seeing: not
-                -- the key itself being "None", but the Mode collapsing to nil
-                -- right after creation and the picker's Toggle/Hold/Press
-                -- behavior never actually engaging. Deselect() only needs to
-                -- update this button's own visuals.
+
                 Button.BackgroundTransparency = 1
                 Button.TextTransparency = 0.5
             end
@@ -4120,11 +3744,6 @@ do
             KeyPicker:Update()
         end
 
-        -- Apply the script-declared default after all picker internals
-        -- (including ModeButtons) have been constructed.
-        -- This makes the default authoritative instead of relying on the
-        -- initial raw fields above. SaveManager may subsequently replace it
-        -- with a saved value, which is the intended persistence behavior.
         KeyPicker:SetValue({
             Key = Info.Default,
             Mode = Info.Mode,
@@ -4273,8 +3892,7 @@ do
             Picking = false
         end)
         Picker.MouseButton2Click:Connect(MenuTable.Toggle)
-        -- Mobile substitute: long-press the picker to open the same mode
-        -- menu a right click would (see AddLongPressAsRightClick above).
+
         Library:AddLongPressAsRightClick(Picker, MenuTable.Toggle)
 
         Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input: InputObject)
@@ -4346,10 +3964,6 @@ do
             table.insert(ParentObj.Addons, KeyPicker)
         end
 
-        -- Preserve the script-declared defaults separately from the live value.
-        -- SaveManager must use these when creating/resetting a fresh config;
-        -- KeyPicker.Value can legitimately become "None" after a config load,
-        -- so using the live value as the default is unsafe.
         KeyPicker.DefaultKey = Info.Default or "None"
         KeyPicker.DefaultModifiers = table.clone(Info.DefaultModifiers or {})
         KeyPicker.DefaultMode = Info.Mode
@@ -4805,8 +4419,7 @@ do
 
         Holder.MouseButton1Click:Connect(function() ColorMenu:Toggle() end)
         Holder.MouseButton2Click:Connect(ContextMenu.Toggle)
-        -- Mobile substitute: long-press the color swatch to open the same
-        -- copy/paste context menu a right click would.
+
         Library:AddLongPressAsRightClick(Holder, ContextMenu.Toggle)
 
         SatVipMap.InputBegan:Connect(function(Input: InputObject)
@@ -5952,19 +5565,7 @@ do
 
         if Input.Finished then
             Box.FocusLost:Connect(function(Enter)
-                -- Previously this only committed Box.Text into Input.Value
-                -- when the box lost focus via Enter (Enter == true) and just
-                -- `return`ed otherwise -- discarding whatever was typed. That
-                -- silently breaks the documented Dialog pattern of "type
-                -- into an Input, then click a footer button to confirm":
-                -- clicking any other control (a footer button, another
-                -- field, clicking outside) blurs the TextBox with
-                -- Enter == false, so Input.Value/Options[Idx].Value never
-                -- picked up the typed text and callbacks reading it saw the
-                -- stale Default (often "nil"/"---"/whatever EmptyReset was)
-                -- instead of what the user actually typed. Any focus loss
-                -- should commit the current text -- Enter is just the fast
-                -- path -- so both branches now call SetValue.
+
                 if not Enter and Input.ClearTextOnBlur then
                     Box.Text = Input.Value
                     return
@@ -8712,9 +8313,7 @@ function Library:Notify(...)
         BackgroundColor3 = "MainColor",
         Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -8, 0, -2) or UDim2.new(1, 8, 0, -2),
         Size = UDim2.fromScale(1, 1),
-        -- Relative to FakeBackground's (inherited) ZIndex instead of a
-        -- standalone absolute value, so it always stays correctly stacked
-        -- above NotificationArea regardless of where that root sits.
+
         ZIndex = FakeBackground.ZIndex + 1,
         Parent = FakeBackground,
     })
@@ -9032,13 +8631,6 @@ function Library:CreateWindow(WindowInfo)
         until ViewportSize.X > 5 and ViewportSize.Y > 5
     end
 
-    -- =========================================================
-    -- BASE UI SIZE
-    --
-    -- WindowInfo.Size is NEVER modified here. The UI is always
-    -- created using its original logical dimensions -- DPI/UIScale
-    -- is what makes that UI fit the current viewport.
-    -- =========================================================
     Library.MinSize = Library.OriginalMinSize
 
     local BaseWindowSize = Vector2.new(WindowInfo.Size.X.Offset, WindowInfo.Size.Y.Offset)
@@ -9105,9 +8697,7 @@ function Library:CreateWindow(WindowInfo)
             Position = WindowInfo.Position,
             Size = WindowInfo.Size,
             Visible = false,
-            -- Explicit baseline so the window is guaranteed to sit at (or
-            -- above) Library.BaseZIndex regardless of Instance creation
-            -- order, instead of silently defaulting to ZIndex 1.
+
             ZIndex = Library.BaseZIndex,
             Parent = ScreenGui,
         })
@@ -9138,7 +8728,7 @@ function Library:CreateWindow(WindowInfo)
                 Library.AutoDPIScale = true
                 Library.BaseScale = Library:CalculateAutoBaseScale()
                 Library:SetDPIScale(5)
-                -- Recalculate after Roblox has laid out the frame (deferred)
+
                 task.defer(function()
                     if Library.AutoDPIScale then
                         Library.BaseScale = Library:CalculateAutoBaseScale()
@@ -9196,11 +8786,7 @@ function Library:CreateWindow(WindowInfo)
                 Position = UDim2.fromScale(0, 0),
                 Size = UDim2.fromScale(1, 1),
                 ScaleType = Enum.ScaleType.Stretch,
-                -- Sit just above MainFrame's own background instead of a
-                -- hardcoded absolute ZIndex -- previously this happened to
-                -- be 999, which is now Library.BaseZIndex (MainFrame's own
-                -- ZIndex), so a literal 999 here would collide with the
-                -- window itself under ZIndexBehavior.Global.
+
                 ZIndex = MainFrame.ZIndex + 1,
                 BackgroundTransparency = 1,
                 ImageTransparency = 0.75,
@@ -11805,19 +11391,9 @@ function Library:CreateWindow(WindowInfo)
             BackgroundTransparency = 1,
             Size = UDim2.fromScale(1, 1),
             Text = "",
-            -- Must be Active so it actually intercepts mouse input instead
-            -- of letting clicks pass through to whatever window element
-            -- sits behind it (buttons, toggles, sliders, etc.). Previously
-            -- this was false, which let the scrim visually dim the window
-            -- while still allowing every element behind the dialog to be
-            -- clicked/dragged/typed into.
+
             Active = true,
-            -- The scrim is intentionally on a LOWER layer than the overlay
-            -- band (Library.DialogScrimZIndex, not DialogContentZIndex):
-            -- it's only a dimming backdrop for the window's own content, so
-            -- any already-open overlay (draggable menus, the Keybinds
-            -- panel, context menus) should stay visibly undimmed and
-            -- interactive above it rather than getting darkened/blocked.
+
             ZIndex = Library.DialogScrimZIndex,
             Visible = true,
             Parent = MainFrame,
@@ -11834,10 +11410,7 @@ function Library:CreateWindow(WindowInfo)
             AutomaticSize = Enum.AutomaticSize.Y,
             Text = "",
             AutoButtonColor = false,
-            -- The dialog's actual content box, unlike its scrim above,
-            -- stays on the TOP layer (DialogContentZIndex, above the
-            -- overlay band) since the dialog itself must remain usable
-            -- while open.
+
             ZIndex = Library.DialogContentZIndex + 1,
             Parent = DialogOverlay,
         })
@@ -12358,13 +11931,7 @@ function Library:CreateWindow(WindowInfo)
     end
 
     function Library:Toggle(Value: boolean?)
-        -- Piggyback the bubble's first-time creation on the window's own
-        -- reveal call. With AutoShow = false (SaveManager in play), THIS is
-        -- the call that fires once config has actually finished loading and
-        -- DPIScale is settled to its final saved value -- same moment the
-        -- window itself is considered safe to show. Only fires once: after
-        -- the bubble exists, later Toggle calls just show/hide the window
-        -- as normal and leave the bubble alone.
+
         if Library.BubbleWantedOnStart and not Library.Bubble and Library.ToggleBubble then
             Library:ToggleBubble(true)
         end
@@ -12461,17 +12028,8 @@ function Library:CreateWindow(WindowInfo)
         end)
     end
 
-    -- Persist AutoShow onto Library itself (not just the local WindowInfo
-    -- table), since config managers like SaveManager read Library.AutoShow
-    -- in RevealAfterLoad to decide whether to reveal the window once
-    -- loading finishes. Without this, Library.AutoShow stayed nil forever
-    -- (WindowInfo.AutoShow was only ever a local variable inside
-    -- CreateWindow), so RevealAfterLoad always fell back to its default of
-    -- true regardless of what was actually passed to CreateWindow.
     Library.AutoShow = WindowInfo.AutoShow
 
-    -- BubbleWantedOnStart must be set BEFORE Library:Toggle can possibly
-    -- run (see below), since Toggle's bubble-creation hook reads it.
     do
         local BubbleEnabled = WindowInfo.Bubble
         if BubbleEnabled == nil then
@@ -12488,13 +12046,6 @@ function Library:CreateWindow(WindowInfo)
             local Padding = WindowInfo.BubblePadding
             local StartSide = (WindowInfo.BubbleSide == "Left") and "Left" or "Right"
 
-            -- UIScale only multiplies AbsoluteSize; it never touches
-            -- Position. Descendants of Bubble (icon/label) inherit its
-            -- UIScale automatically, so THEIR sizing must stay in base/
-            -- unscaled units (Width/Height below). But Bubble's own Position
-            -- offset is real screen pixels and must be computed from its
-            -- actual RENDERED (scaled) size, or the initial placement will be
-            -- off except at DPIScale's default (5/Scale=1).
             local ScaleFactor = math.max(Library.DPIScale or 1, 0.001)
             local Width, Height = BaseWidth, BaseHeight
             local RenderedWidth, RenderedHeight = BaseWidth * ScaleFactor, BaseHeight * ScaleFactor
@@ -12523,12 +12074,6 @@ function Library:CreateWindow(WindowInfo)
                 })
             )
 
-            -- IMPORTANT: the bubble is created well after the initial DPI
-            -- calculation (it may even be created much later, lazily, via
-            -- ToggleBubble). A fresh UIScale defaults to Scale = 1, so it
-            -- must be explicitly set to the CURRENT scale immediately,
-            -- rather than waiting for the next SetDPIScale() call -- otherwise
-            -- the bubble briefly renders at full/wrong size.
             local BubbleScale = New("UIScale", {
                 Scale = math.max(Library.DPIScale or 1, 0.001),
                 Parent = Bubble,
@@ -12576,18 +12121,6 @@ function Library:CreateWindow(WindowInfo)
 
             local SnapTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
-            -- Library.BubbleRelativeY is the bubble's vertical anchor as a
-            -- 0-1 FRACTION of the available travel range (0 = flush to the
-            -- top, 1 = flush to the bottom), not a raw pixel offset. Raw
-            -- pixels are what caused the bubble to drift toward the top
-            -- (or off-position generally) whenever AutoDPIScale changed the
-            -- rendered size: clamping an old absolute Y against a new,
-            -- different RenderedHeight is not the same point on screen
-            -- proportionally, so the bubble visibly "jumped". Storing a
-            -- ratio instead means re-deriving the pixel Y after ANY size
-            -- change reproduces the same relative position exactly, so a
-            -- DPI change re-centers the bubble on its own anchor instead of
-            -- letting it creep. Defaults to vertical center (0.5).
             if Library.BubbleRelativeY == nil then
                 Library.BubbleRelativeY = 0.5
             end
@@ -12598,21 +12131,14 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local function SnapToSide(ToSide: string, PreserveRelativeY: boolean?)
-                -- UIScale only multiplies Bubble's AbsoluteSize; it never
-                -- touches Position. So Bubble.Position's offset is already in
-                -- real screen pixels, same space as AbsolutePosition and
-                -- ScreenGui.AbsoluteSize -- no scale conversion needed here.
-                -- The bubble sits flush against the screen edge (no margin).
+
                 local RenderedHeight = Bubble.AbsoluteSize.Y
                 local RenderedWidth = Bubble.AbsoluteSize.X
                 local AvailableY = GetAvailableY(RenderedHeight)
 
                 local ClampedY
                 if PreserveRelativeY then
-                    -- Re-derive Y from the stored ratio instead of the
-                    -- current (possibly stale/pre-scale) AbsolutePosition,
-                    -- so the bubble reappears at the SAME relative spot
-                    -- regardless of how much RenderedHeight just changed.
+
                     ClampedY = AvailableY * math.clamp(Library.BubbleRelativeY, 0, 1)
                 else
                     local Y = Bubble.AbsolutePosition.Y
@@ -12631,10 +12157,6 @@ function Library:CreateWindow(WindowInfo)
                 TweenService:Create(Bubble, SnapTweenInfo, { Position = TargetPos }):Play()
             end
 
-            -- Exposed so SetDPIScale (defined far above CreateBubble, and
-            -- unable to see this local) can reuse the SAME magnet logic that
-            -- already works correctly for drag-release, instead of a second
-            -- hand-rolled reimplementation that reads stale AbsoluteSize.
             Library.SnapBubbleToSide = SnapToSide
             Library.BubbleSide = StartSide
 
@@ -12667,11 +12189,7 @@ function Library:CreateWindow(WindowInfo)
                     if Moved then
                         local ScreenSize = ScreenGui.AbsoluteSize
                         local CenterX = Bubble.AbsolutePosition.X + (Bubble.AbsoluteSize.X / 2)
-                        -- Not PreserveRelativeY: the user just dragged to a
-                        -- brand new spot, so SnapToSide should read that new
-                        -- AbsolutePosition and record ITS ratio as the new
-                        -- anchor, rather than snapping back to wherever the
-                        -- bubble was before the drag.
+
                         SnapToSide(CenterX < (ScreenSize.X / 2) and "Left" or "Right")
                     else
                         Library:Toggle()
@@ -12697,11 +12215,6 @@ function Library:CreateWindow(WindowInfo)
                         Moved = true
                     end
 
-                    -- UIScale only multiplies the parent's AbsoluteSize; it
-                    -- never touches Position. So Bubble.Position's offset is
-                    -- already in real screen pixels, same as Input.Position/
-                    -- Delta -- no scale conversion needed here, matching how
-                    -- MakeDraggable moves the main window.
                     Bubble.Position = UDim2.new(
                         StartPos.X.Scale, StartPos.X.Offset + Delta.X,
                         StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y
@@ -12722,9 +12235,7 @@ function Library:CreateWindow(WindowInfo)
                 if Library.Bubble then
                     Library.Bubble.Visible = true
                 else
-                    -- Same as the initial creation path: make sure DPIScale
-                    -- reflects the current viewport before the bubble's
-                    -- initial position gets baked from it.
+
                     if Library.AutoDPIScale then
                         Library.BaseScale = Library:CalculateAutoBaseScale()
                     end
@@ -12741,57 +12252,12 @@ function Library:CreateWindow(WindowInfo)
             return Value
         end
 
-        -- BubbleWantedOnStart is already set earlier, and actual bubble
-        -- creation happens inside Library:Toggle itself -- piggybacked on
-        -- the exact call that reveals the window, whether that's the
-        -- task.spawn below (AutoShow = true, no config manager) or the
-        -- consumer/SaveManager's own call to Library:Toggle() once config
-        -- has actually finished loading (AutoShow = false). Either way the
-        -- bubble is built at the same moment the window is considered safe
-        -- to show, reading the final, settled DPI scale.
     end
 
-    -- Positioned AFTER the bubble block above (not before): Library:Toggle's
-    -- bubble-creation hook checks Library.ToggleBubble, which is only
-    -- assigned inside that block. task.spawn resumes its thread immediately
-    -- (per Roblox's scheduler), so if this ran any earlier, ToggleBubble
-    -- wouldn't exist yet and the bubble would silently never get created.
-    --
-    -- Also respect Library.DeferAutoShowTo: if a config manager (e.g.
-    -- SaveManager) has claimed ownership of the initial reveal via
-    -- SetLibrary(), it hasn't loaded the saved config yet, so the window
-    -- must NOT auto-show here even if AutoShow = true -- doing so would
-    -- flash default/unloaded values before the real config is applied.
-    -- The config manager is solely responsible for calling Toggle(true)
-    -- (or leaving it hidden) once loading has actually finished.
-    --
-    -- IMPORTANT -- ORDERING REQUIREMENT: this check runs synchronously,
-    -- as part of this same CreateWindow call, BEFORE CreateWindow returns
-    -- to your script. That means SaveManager:SetLibrary(Library) (or any
-    -- other config manager's SetLibrary) MUST be called BEFORE
-    -- Library:CreateWindow, not after. If SetLibrary is called after
-    -- CreateWindow, Library.DeferAutoShowTo is still nil at the time this
-    -- check runs, so the window (and bubble, if enabled) will auto-show
-    -- immediately with default/unloaded values, then get toggled again
-    -- once the config manager actually finishes loading -- causing a
-    -- visible flash/flicker of default state. See the Docs.md "Avoiding
-    -- the Flash of Default Values on Startup" section for the required
-    -- setup order.
     if WindowInfo.AutoShow and not Library.ActiveLoading and not Library.DeferAutoShowTo then
         task.spawn(Library.Toggle)
     end
 
-    -- IMPORTANT -- BUBBLE CREATION IS DECOUPLED FROM AUTOSHOW: bubble
-    -- creation is normally piggybacked on Library:Toggle (see Toggle's
-    -- body above), but Toggle only ever runs here if WindowInfo.AutoShow
-    -- is true. If AutoShow is false (and no config manager has claimed
-    -- DeferAutoShowTo -- SaveManager handles its own bubble creation via
-    -- Toggle in that case, see RevealAfterLoad), BubbleWantedOnStart may
-    -- still be true (Bubble = true was passed to CreateWindow, or IsMobile
-    -- is true), but nothing would ever call Toggle to create it. Without
-    -- this, the window correctly stays hidden but the bubble silently
-    -- never appears. Create it directly here instead of going through
-    -- Toggle, since we explicitly do NOT want to show/hide the window.
     if not WindowInfo.AutoShow and not Library.DeferAutoShowTo
         and Library.BubbleWantedOnStart and not Library.Bubble and Library.ToggleBubble then
         task.spawn(function()
@@ -12807,15 +12273,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(0, 300, 0, 400),
             Visible = false,
             ZIndex = Library.SearchOverlayZIndex,
-            -- Parented to MainFrame (not ScreenGui) so it shares MainFrame's
-            -- single UIScale instead of getting its own independent one via
-            -- NewTrackedScale. Previously SearchOverlay and SearchBox lived
-            -- under two DIFFERENT UIScale nodes that were kept in sync by
-            -- hand, which is exactly the kind of setup that drifts whenever
-            -- anything about the scale timing is even slightly off. With one
-            -- shared UIScale, RepositionOverlay below only needs relative,
-            -- same-space math -- no more manually multiplying/dividing by
-            -- ScaleFactor to convert between two independently-scaled trees.
+
             Parent = MainFrame,
         })
         Library:AddToRegistry(SearchOverlay, { BackgroundColor3 = "MainColor" })
@@ -12941,10 +12399,7 @@ function Library:CreateWindow(WindowInfo)
                         BorderSizePixel = 0,
                         Position = UDim2.fromOffset(RelX, RelY),
                         Size = UDim2.fromOffset(SizeX, SizeY),
-                        -- Above all regular window content (tabs, sections,
-                        -- elements) but below tooltips/overlays, so the
-                        -- highlight ring is always visible over whatever it's
-                        -- pointing at instead of getting buried underneath it.
+
                         ZIndex = Library.TooltipZIndex,
                         Parent = MainFrame,
                     })
@@ -13206,14 +12661,6 @@ function Library:CreateWindow(WindowInfo)
         local function RepositionOverlay()
             local ScaleFactor = math.max(Library.DPIScale or 1, 0.0001)
 
-            -- SearchOverlay and SearchBox now share the SAME UIScale (the one
-            -- on MainFrame, since SearchOverlay is parented under MainFrame).
-            -- That means there is only ONE scale factor in play here, not two
-            -- independently-scaled trees to reconcile. Converting both
-            -- AbsolutePosition readings into MainFrame's logical/pre-scale
-            -- space and subtracting gives the correct relative offset
-            -- directly -- no compounding, no guessing which side needs to be
-            -- multiplied vs divided.
             local SearchAbsPos  = SearchBox.AbsolutePosition
             local SearchAbsSize = SearchBox.AbsoluteSize
             local MainAbsPos    = MainFrame.AbsolutePosition
@@ -13233,12 +12680,7 @@ function Library:CreateWindow(WindowInfo)
 
         Library:GiveDPIScaleCallback(function()
             if SearchOverlay.Visible then
-                -- Kept as a defensive re-run after a real rendered frame:
-                -- AbsolutePosition/AbsoluteSize don't repropagate the instant
-                -- UIScale.Scale changes, only after the next layout pass.
-                -- With a single shared UIScale this matters far less than
-                -- before (both sides settle together), but waiting for
-                -- RenderStepped still guarantees the read is post-layout.
+
                 task.spawn(function()
                     RunService.RenderStepped:Wait()
                     if SearchOverlay.Visible then
