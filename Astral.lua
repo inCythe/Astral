@@ -119,7 +119,12 @@ do
         ForceRedownload: boolean?
     )
         if CustomImageManagerAssets[AssetName] ~= nil then
-            error(string.format("Asset %q already exists", AssetName))
+            -- Was `error(...)`. AddAsset can run before any window/UI
+            -- exists (Library:Notify isn't available yet this early), and
+            -- nothing should ever print to the console -- so a duplicate
+            -- registration is now just silently ignored (first registration
+            -- wins) instead of halting execution with a console error.
+            return
         end
 
         assert(typeof(RobloxAssetId) == "number", "RobloxAssetId must be a number")
@@ -355,7 +360,6 @@ local Library = {
     ShowCustomCursor = false,
     ForceCheckbox = false,
     ShowToggleFrameInKeybinds = true,
-    NotifyOnError = false,
     WaitForIconsOnLoad = true,
 
     CantDragForced = false,
@@ -753,7 +757,6 @@ local function GetSchemeValue(Index)
 
     local AliasIndex = SchemeAlias[Index]
     if AliasIndex and Library.Scheme[AliasIndex] ~= nil then
-        warn(string.format("Scheme Value %q is deprecated, please use %q instead.", Index, AliasIndex))
         return Library.Scheme[AliasIndex]
     end
 
@@ -1506,7 +1509,6 @@ function Library:WaitForIcons(Timeout: number?): boolean
 
     while not IconsLoaded do
         if tick() - StartTime > Timeout then
-            warn("[Astral] Icon loading timed out after " .. Timeout .. " seconds")
             return false
         end
         task.wait(0.1)
@@ -1927,10 +1929,16 @@ function Library:SafeCallback(Func: (...any) -> ...any, ...: any)
     end
 
     local Result = table.pack(xpcall(Func, function(Error)
-        task.defer(error, debug.traceback(Error, 2))
-        if Library.NotifyOnError then
-            Library:Notify(Error)
-        end
+        -- Previously also did `task.defer(error, debug.traceback(Error, 2))`
+        -- here, which deliberately re-raises the error a frame later purely
+        -- to print it (with a traceback) to the console/output -- on EVERY
+        -- callback error anywhere in the library (toggles, buttons,
+        -- sliders, keypickers, etc). Nothing should ever print to the
+        -- console, so that re-raise is gone; the notification below is now
+        -- the only surface for callback errors, and always fires
+        -- (not gated behind Library.NotifyOnError) so an error is never
+        -- silently swallowed with no visible feedback at all.
+        Library:Notify(Error)
 
         return Error
     end, ...))
@@ -2118,7 +2126,6 @@ function Library:AddBlank(Frame: GuiObject, Size: UDim2)
 end
 
 function Library:MakeOutline(Frame: GuiObject, Corner: number?, ZIndex: number?)
-    warn("Astral:MakeOutline is deprecated, please use Astral:AddOutline instead.")
     local Holder = New("Frame", {
         BackgroundColor3 = "DarkColor",
         Position = UDim2.fromOffset(-2, -2),
@@ -13491,7 +13498,10 @@ end
 
 function Library:CreateLoading(LoadingInfo)
     if Library.ActiveLoading then
-        warn("Loading GUI already exists, you cannot create multiple Loading GUIs.")
+        Library:Notify({
+            Title = "Astral",
+            Description = "A Loading GUI already exists -- only one can be active at a time.",
+        })
         return Library.ActiveLoading
     end
 
