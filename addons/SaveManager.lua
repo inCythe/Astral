@@ -122,11 +122,6 @@ do
                 local mode = value.mode or object.Mode or object.DefaultMode
                 local modifiers = value.modifiers
 
-                -- A stale/old config can contain key = "None". Do not let that
-                -- value destroy a script-declared default when the config is being
-                -- recreated/reset. Explicitly saved None is still respected when
-                -- loading an existing user config; fresh defaults are handled by
-                -- SaveManager:ResetToDefaults below.
                 object:SetValue({ Key = key, Mode = mode, Modifiers = modifiers })
             end,
         },
@@ -145,23 +140,6 @@ do
     function SaveManager:SetLibrary(Library)
         self.Library = Library
 
-        -- SaveManager now owns revealing the window: it has to load the
-        -- config first and only THEN show/hide based on AutoShow. Tell the
-        -- library to stand down its own auto-reveal (CreateWindow's
-        -- task.defer and Loading:Destroy) so it can't show the UI early
-        -- with default/unloaded values while SaveManager is still working.
-        --
-        -- ORDERING REQUIREMENT: this MUST be called BEFORE
-        -- Library:CreateWindow(...), not after. CreateWindow checks
-        -- Library.DeferAutoShowTo synchronously, before it returns to your
-        -- script, in order to decide whether to auto-reveal the window. If
-        -- SetLibrary runs after CreateWindow, that check has already
-        -- happened and already seen DeferAutoShowTo as nil -- the window
-        -- (and bubble, if enabled) will have already flashed default/
-        -- unloaded values before SaveManager gets a chance to load the
-        -- real config. Library.Toggled being true here is a reliable sign
-        -- that's exactly what just happened, so warn loudly instead of
-        -- failing silently.
         if Library and typeof(Library) == "table" then
             if Library.Toggled then
                 warn("[SaveManager] SetLibrary() was called AFTER Library:CreateWindow(). " ..
@@ -415,10 +393,6 @@ do
             if self.Ignore[idx] then continue end
 
             if option.Type == "KeyPicker" and option.SetValue then
-                -- KeyPicker.Default used to be copied from the live Value, which
-                -- means a previous load of "None" could turn the supposed default
-                -- into "None" permanently. Use the immutable script-declared
-                -- DefaultKey/DefaultMode/DefaultModifiers instead.
                 local key = option.DefaultKey or option.Default or "None"
                 local mode = option.DefaultMode or option.Mode
                 local modifiers = table.clone(option.DefaultModifiers or {})
@@ -528,8 +502,6 @@ do
         if table.find(list, name) then
             self:Load(name)
         else
-            -- A brand-new config must be created from the library/example
-            -- defaults, never from whatever values happen to be in memory.
             self:ResetToDefaults()
             self.CurrentConfig = name
             self:Save(name)
@@ -653,11 +625,6 @@ do
         end)
     end
 
-    -- Single source of truth for "config is done loading, now show/hide the
-    -- window per AutoShow". Waits out any active loading screen (icon
-    -- loading, Library:CreateLoading, etc.) so the reveal never races it,
-    -- then releases the DeferAutoShowTo flag so the window's own AutoShow
-    -- logic behaves normally again afterward (e.g. the ToggleKeybind).
     function SaveManager:RevealAfterLoad()
         local Lib = self.Library
         local Window = Lib
@@ -669,9 +636,6 @@ do
             AutoShow = Lib.AutoShow
         end
 
-        -- If a loading screen (e.g. icon preloading) is still up, wait for
-        -- it to finish before revealing -- otherwise the window would pop
-        -- in underneath/before the splash is gone.
         local LibraryTable = (Lib and typeof(Lib) == "table" and Lib) or (Window and typeof(Window) == "table" and Window.Library)
         if LibraryTable then
             while LibraryTable.ActiveLoading do
@@ -679,24 +643,12 @@ do
             end
         end
 
-        -- IMPORTANT: always route through Toggle (never skip it) even when
-        -- AutoShow is false. Library:Toggle() is also what piggybacks the
-        -- bubble's first-time creation (see Library.BubbleWantedOnStart /
-        -- Library.ToggleBubble in Astral.lua) -- that hook only fires
-        -- inside Toggle itself. If we skip calling Toggle entirely while
-        -- AutoShow is off, the bubble never gets created, leaving the user
-        -- with neither the window nor the bubble visible. So we always call
-        -- Toggle with the correct target value (true for AutoShow, false
-        -- otherwise) instead of conditionally avoiding the call.
         if Window and Window.Toggle then
             Window:Toggle(AutoShow)
         elseif Window and typeof(Window) == "table" and Window.Library and Window.Library.Toggle then
             Window.Library:Toggle(AutoShow)
         end
 
-        -- Release the "SaveManager owns the reveal" flag now that the
-        -- reveal has actually happened, so normal manual toggling
-        -- (keybind/bubble) isn't affected going forward.
         if LibraryTable and LibraryTable.DeferAutoShowTo == self then
             LibraryTable.DeferAutoShowTo = nil
         end
