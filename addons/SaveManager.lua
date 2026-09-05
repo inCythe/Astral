@@ -50,7 +50,7 @@ end
 
 local SaveManager = {}
 do
-    SaveManager.Folder = "AstralSettings"
+    SaveManager.Folder = "Astral"
     SaveManager.SubFolder = ""
     SaveManager.Ignore = {}
     SaveManager.Library = nil
