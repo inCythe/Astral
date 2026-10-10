@@ -743,6 +743,7 @@ A boolean toggle rendered as a pill switch or as a checkbox (if `Library:SetForc
 local Toggle = Section:AddToggle("myToggle", {
     Text     = "Enable Feature",
     Default  = false,
+    FireDefault = true,
     Callback = function(Value) end,
     Changed  = function(Value) end,
     Risky    = false,
@@ -761,6 +762,8 @@ Type
 
 `Default?`boolean
 
+`FireDefault?`boolean
+
 `Risky?`boolean
 
 `Disabled?`boolean
@@ -768,6 +771,14 @@ Type
 `Visible?`boolean
 
 `Tooltip?`string
+
+---
+
+> **`Default` fires its callback on startup.** When a toggle is created with `Default = true`, its `Callback` and `Changed` run once after the rest of your UI has finished building, so the feature behind it is actually active without you having to call `SetValue(true)` yourself. It is deferred (`task.defer`) on purpose: the whole script has run by then, so toggles that reference elements created later still resolve correctly.
+>
+> The deferred call is skipped if something already applied the toggle in the meantime (for example `SaveManager:Load()`, which calls `SetValue` itself), so a saved config never results in a double-fire.
+>
+> Set `FireDefault = false` to opt out and keep the old behaviour of never firing the callback at construction.
 
 ---
 
@@ -2916,6 +2927,37 @@ Tooltip:Destroy()         -- Disconnect and remove the tooltip
 | 3 | GuiObject to attach to | GuiObject | nil |
 
 > Tooltips are automatically suppressed while a [Dialog](#dialogs) is open (`Library.ActiveDialog`), so a hover tooltip from an element behind the dialog can't appear on top of the modal.
+
+---
+
+### Focus Highlight
+
+Attach an accent-coloured highlight to a text-entry field while it has focus. Every built-in text field already does this -- `AddInput`, the topbar search bar, a searchable dropdown's search bar, the color picker's hex/RGB boxes, editable sliders, and `AddKeyBox` -- so you only need this when building custom UI.
+
+```lua
+local Highlight = Library:AddFocusHighlight(SomeTextBox)
+
+Library:AddFocusHighlight(SomeTextBox, SomeStroke, {
+    Accent      = "AccentColor",  -- scheme key used while focused
+    Color       = "OutlineColor", -- scheme key used while blurred
+    Background  = true,           -- also lighten the background while focused
+    BackgroundTarget = nil,       -- tint a different GuiObject (e.g. a parent Frame)
+    BackgroundShift = 6,          -- brightness shift applied to the background
+    Thickness   = nil,            -- resting stroke thickness (defaults to the stroke's own)
+    Transparency = nil,           -- resting stroke transparency
+    FocusedThickness = nil,       -- defaults to `Thickness + 1`
+    FocusedTransparency = nil,    -- defaults to 0
+    Enabled     = true,           -- set false to skip attaching entirely
+})
+```
+
+| Arg Idx | Argument Description | Type | Default |
+| --- | --- | --- | --- |
+| 1 | TextBox that drives the highlight via its `Focused`/`FocusLost` signals | TextBox | nil |
+| 2 | Stroke to highlight. Defaults to the box's first `UIStroke`, or a new one if it has none | UIStroke? | nil |
+| 3 | Options table, see above | { [string]: any }? | nil |
+
+The highlight is theme-aware: the resting colours are read from `Library.Registry`, so a `ThemeManager` switch (even while a field is focused) restores the correct scheme colours instead of leaving a stale accent behind. States are tracked in `Library.FocusHighlights` and torn down by `Library:Unload()`.
 
 ---
 

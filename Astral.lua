@@ -278,6 +278,7 @@ local Library = {
     OverlayCascadeStep = 0,
 
     Corners = {},
+    FocusHighlights = {},
 
     BaseZIndex = 999,
     BubbleZIndexOffset = 1,
@@ -511,6 +512,7 @@ local Templates = {
     Toggle = {
         Text = "Toggle",
         Default = false,
+        FireDefault = true,
 
         Callback = function() end,
         Changed = function() end,
@@ -1109,6 +1111,12 @@ function Library:UpdateColorsUsingRegistry()
             if SchemeValue or typeof(Index) == "function" then
                 Inst[Property] = SchemeValue or Index()
             end
+        end
+    end
+
+    if Library.FocusHighlights then
+        for _, Highlight in Library.FocusHighlights do
+            Highlight:Reapply()
         end
     end
 end
@@ -1975,6 +1983,166 @@ function Library:AddOutline(Frame: GuiObject)
         Parent = Frame,
     })
     return OutlineStroke, ShadowStroke
+end
+
+function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: any }?)
+    if typeof(Box) ~= "Instance" or not Box:IsA("GuiObject") or not Box:IsA("TextBox") then
+        return
+    end
+
+    Options = Options or {}
+
+    if Options.Enabled == false then
+        return
+    end
+
+    local AccentKey = Options.Accent or "AccentColor"
+    local RestColorKey = Options.Color or "OutlineColor"
+
+    Stroke = Stroke or Box:FindFirstChildOfClass("UIStroke")
+
+    if not Stroke then
+        Stroke = New("UIStroke", {
+            Color = RestColorKey,
+            Parent = Box,
+        })
+    end
+
+    local StrokeRegistry = Library.Registry[Stroke]
+    if typeof(StrokeRegistry) == "table" and typeof(StrokeRegistry.Color) == "string" then
+        RestColorKey = StrokeRegistry.Color
+    end
+
+    local BackgroundTarget: GuiObject = Options.BackgroundTarget or Box
+    local TintBackground = Options.Background ~= false and BackgroundTarget ~= nil
+
+    local BoxRegistry = Library.Registry[BackgroundTarget]
+    local RestBackgroundKey = typeof(BoxRegistry) == "table" and BoxRegistry.BackgroundColor3 or nil
+    local InitialBackgroundColor = BackgroundTarget.BackgroundColor3
+
+    local RestTransparency = Stroke.Transparency
+    if Options.Transparency ~= nil then
+        RestTransparency = Options.Transparency
+    end
+
+    local RestThickness = Stroke.Thickness
+    if Options.Thickness ~= nil then
+        RestThickness = Options.Thickness
+    end
+
+    local FocusedTransparency = 0
+    if Options.FocusedTransparency ~= nil then
+        FocusedTransparency = Options.FocusedTransparency
+    end
+
+    local FocusedThickness = RestThickness + 1
+    if Options.FocusedThickness ~= nil then
+        FocusedThickness = Options.FocusedThickness
+    end
+
+    local BackgroundShift = 6
+    if Options.BackgroundShift ~= nil then
+        BackgroundShift = Options.BackgroundShift
+    end
+
+    local State = {
+        Box = Box,
+        Stroke = Stroke,
+        BackgroundTarget = TintBackground and BackgroundTarget or nil,
+        Focused = false,
+
+        RestColorKey = RestColorKey,
+        AccentKey = AccentKey,
+
+        RestBackgroundKey = RestBackgroundKey,
+        InitialBackgroundColor = InitialBackgroundColor,
+
+        RestTransparency = RestTransparency,
+        RestThickness = RestThickness,
+        FocusedTransparency = FocusedTransparency,
+        FocusedThickness = FocusedThickness,
+        BackgroundShift = BackgroundShift,
+    }
+
+    function State:ResolveRestColor()
+        local Properties = Library.Registry[self.Stroke]
+        local Key = typeof(Properties) == "table" and Properties.Color or nil
+        return GetSchemeValue(Key or self.RestColorKey) or self.Stroke.Color
+    end
+
+    function State:ResolveAccentColor()
+        return GetSchemeValue(self.AccentKey) or self.AccentKey
+    end
+
+    function State:ResolveRestBackground()
+        if not self.BackgroundTarget then
+            return nil
+        end
+
+        local Properties = Library.Registry[self.BackgroundTarget]
+        local Key = typeof(Properties) == "table" and Properties.BackgroundColor3 or nil
+
+        return GetSchemeValue(Key or self.RestBackgroundKey) or self.InitialBackgroundColor
+    end
+
+    function State:Reapply()
+        if not self.Focused or not self.Stroke.Parent then
+            return
+        end
+
+        self.Stroke.Color = self:ResolveAccentColor()
+        self.Stroke.Transparency = self.FocusedTransparency
+        self.Stroke.Thickness = self.FocusedThickness
+
+        if self.BackgroundTarget then
+            self.BackgroundTarget.BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift)
+        end
+    end
+
+    function State:Apply(Focused: boolean)
+        self.Focused = Focused
+
+        if not self.Stroke.Parent then
+            return
+        end
+
+        if Focused then
+            TweenService:Create(self.Stroke, Library.TweenInfo, {
+                Color = self:ResolveAccentColor(),
+                Thickness = self.FocusedThickness,
+                Transparency = self.FocusedTransparency,
+            }):Play()
+
+            if self.BackgroundTarget then
+                TweenService:Create(self.BackgroundTarget, Library.TweenInfo, {
+                    BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift),
+                }):Play()
+            end
+        else
+            TweenService:Create(self.Stroke, Library.TweenInfo, {
+                Color = self:ResolveRestColor(),
+                Thickness = self.RestThickness,
+                Transparency = self.RestTransparency,
+            }):Play()
+
+            if self.BackgroundTarget then
+                TweenService:Create(self.BackgroundTarget, Library.TweenInfo, {
+                    BackgroundColor3 = self:ResolveRestBackground(),
+                }):Play()
+            end
+        end
+    end
+
+    table.insert(Library.FocusHighlights, State)
+
+    Library:GiveSignal(Box.Focused:Connect(function()
+        State:Apply(true)
+    end))
+    Library:GiveSignal(Box.FocusLost:Connect(function()
+        State:Apply(false)
+    end))
+
+    return State
 end
 
 function Library:AddBlank(Frame: GuiObject, Size: UDim2)
@@ -3200,6 +3368,8 @@ function Library:Unload()
 
     Library.AutoDPIScaleConnection = nil
 
+    table.clear(Library.FocusHighlights)
+
     for _, Callback in Library.UnloadSignals do
         Library:SafeCallback(Callback)
     end
@@ -4285,6 +4455,8 @@ do
             })
         )
 
+        Library:AddFocusHighlight(HueBox)
+
         local RgbBox = New("TextBox", {
             BackgroundColor3 = "BackgroundColor",
             ClearTextOnFocus = false,
@@ -4307,6 +4479,8 @@ do
                 Parent = RgbBox,
             })
         )
+
+        Library:AddFocusHighlight(RgbBox)
 
         local ContextMenu = Library:AddContextMenu(Holder, UDim2.fromOffset(93, 0), function()
             return { Holder.AbsoluteSize.X + 1.5, 0.5 }
@@ -5206,6 +5380,8 @@ do
             Text = Info.Text,
             Value = Info.Default,
 
+            FireDefault = Info.FireDefault,
+
             Tooltip = Info.Tooltip,
             DisabledTooltip = Info.DisabledTooltip,
             TooltipTable = nil,
@@ -5217,6 +5393,8 @@ do
             Disabled = Info.Disabled,
             Visible = Info.Visible,
             Addons = {},
+
+            DefaultApplied = false,
 
             Variant = InitialVariant,
 
@@ -5302,6 +5480,8 @@ do
                 return
             end
 
+            Toggle.DefaultApplied = true
+
             Toggle.Value = Value
             Toggle:Display()
 
@@ -5382,6 +5562,26 @@ do
         table.insert(Section.Elements, Toggle)
 
         Toggle.Default = Toggle.Value
+
+        if Toggle.FireDefault and Toggle.Value == true then
+            local DeferredToggle = Toggle
+
+            task.defer(function()
+                if Library.Unloaded or DeferredToggle.Disabled then
+                    return
+                end
+
+                if DeferredToggle.DefaultApplied or DeferredToggle.Value ~= DeferredToggle.Default then
+                    return
+                end
+
+                DeferredToggle.DefaultApplied = true
+
+                Library:UpdateConditionalGroups()
+                Library:SafeCallback(DeferredToggle.Callback, DeferredToggle.Value)
+                Library:SafeCallback(DeferredToggle.Changed, DeferredToggle.Value)
+            end)
+        end
 
         return Toggle
     end
@@ -5489,6 +5689,8 @@ do
             Color = "OutlineColor",
             Parent = Box,
         })
+
+        Library:AddFocusHighlight(Box)
 
         table.insert(
             Library.Corners,
@@ -5696,6 +5898,7 @@ do
                     })
                 )
                 Library:AddToRegistry(InlineValueBox, { BackgroundColor3 = "MainColor" })
+                Library:AddFocusHighlight(InlineValueBox)
             end
         end
 
@@ -5775,6 +5978,10 @@ do
                     Parent = ValueBox,
                 })
             )
+            Library:AddFocusHighlight(ValueBox, nil, {
+                Color = "AccentColor",
+                BackgroundShift = 8,
+            })
         end
 
         table.insert(
@@ -6418,7 +6625,7 @@ do
                 Visible = false,
                 Parent = Holder,
             })
-            New("UIStroke", { Color = "OutlineColor", Parent = SearchBar })
+            local SearchBarStroke = New("UIStroke", { Color = "OutlineColor", Parent = SearchBar })
             if Library.CornerRadiusDropdown == true then
                 table.insert(Library.Corners, New("UICorner", {
                     CornerRadius = UDim.new(0, Library.CornerRadius / 2),
@@ -6448,6 +6655,11 @@ do
                 TextSize = 13,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 Parent = SearchBar,
+            })
+
+            Library:AddFocusHighlight(SearchBox, SearchBarStroke, {
+                BackgroundTarget = SearchBar,
+                BackgroundShift = 6,
             })
 
             if Info.Multi then
@@ -8974,6 +9186,8 @@ function Library:CreateWindow(WindowInfo)
             Parent = SearchBox,
         })
 
+        Library:AddFocusHighlight(SearchBox)
+
         local SearchIcon = Library:GetIcon("search")
         if SearchIcon then
             New("ImageLabel", {
@@ -11243,6 +11457,8 @@ function Library:CreateWindow(WindowInfo)
                     Parent = Box,
                 })
             )
+
+            Library:AddFocusHighlight(Box)
 
             local Button = New("TextButton", {
                 AnchorPoint = Vector2.new(1, 0),
