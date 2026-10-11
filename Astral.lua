@@ -8547,29 +8547,6 @@ do
             return Dropdown.Values[Val] ~= nil
         end
 
-        local function ValueExists(Val)
-            if IsSequentialArray(Dropdown.Values) then
-                for _, Existing in Dropdown.Values do
-                    if Existing == Val then
-                        return true
-                    end
-                end
-
-                return false
-            end
-
-            return Dropdown.Values[Val] ~= nil
-        end
-
-        function Dropdown:RunChanged()
-            if Dropdown.Disabled then
-                return
-            end
-
-            Library:SafeCallback(Dropdown.Callback, Dropdown.Value)
-            Library:SafeCallback(Dropdown.Changed, Dropdown.Value)
-        end
-
         function Dropdown:SetValue(Value)
             if Info.Multi then
                 if typeof(Value) == "string" then
