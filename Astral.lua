@@ -264,6 +264,7 @@ local Library = {
 
     KeybindFrame = nil,
     KeybindContainer = nil,
+    KeybindMenu = nil,
     KeybindToggles = {},
 
     Notifications = {},
@@ -3319,6 +3320,9 @@ function Library:AddDraggableMenu(Name: string)
     function ContainerObj:ToggleCollapsed()
         SetMenuCollapsed(not MenuCollapsed)
     end
+    function ContainerObj:IsCollapsed(): boolean
+        return MenuCollapsed
+    end
     function ContainerObj:Remove()
         if Holder then
             Holder.Visible = false
@@ -6154,6 +6158,15 @@ do
             Toggle.Changed = Func
         end
 
+        function Toggle:RunChanged()
+            if Toggle.Disabled then
+                return
+            end
+
+            Library:SafeCallback(Toggle.Callback, Toggle.Value)
+            Library:SafeCallback(Toggle.Changed, Toggle.Value)
+        end
+
         function Toggle:SetValue(Value)
             if Toggle.Disabled then
                 return
@@ -6392,6 +6405,15 @@ do
 
         function Input:OnChanged(Func)
             Input.Changed = Func
+        end
+
+        function Input:RunChanged()
+            if Input.Disabled then
+                return
+            end
+
+            Library:SafeCallback(Input.Callback, Input.Value)
+            Library:SafeCallback(Input.Changed, Input.Value)
         end
 
         function Input:SetValue(Text)
@@ -6771,6 +6793,15 @@ do
 
         function Slider:OnChanged(Func)
             Slider.Changed = Func
+        end
+
+        function Slider:RunChanged()
+            if Slider.Disabled then
+                return
+            end
+
+            Library:SafeCallback(Slider.Callback, Slider.Value)
+            Library:SafeCallback(Slider.Changed, Slider.Value)
         end
 
         function Slider:SetMax(Value)
@@ -10186,7 +10217,7 @@ function Library:CreateWindow(WindowInfo)
     local LastExpandedWidth = InitialLeftWidth
 
     do
-        Library.KeybindFrame, Library.KeybindContainer = Library:AddDraggableMenu("Keybinds")
+        Library.KeybindFrame, Library.KeybindContainer, Library.KeybindMenu = Library:AddDraggableMenu("Keybinds")
         Library.KeybindFrame.AnchorPoint = Vector2.new(0, 0.5)
         Library.KeybindFrame.Position = UDim2.new(0, 6, 0.5, 0)
         Library.KeybindFrame.Visible = false
@@ -14609,6 +14640,9 @@ function Library:CreateWindow(WindowInfo)
     Library:GiveSignal(UserInputService.WindowFocusReleased:Connect(function()
         Library.IsRobloxFocused = false
     end))
+
+    Window.MainFrame = MainFrame
+    Library.Window = Window
 
     return Window
 end
