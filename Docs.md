@@ -1139,7 +1139,7 @@ Type
 
 ---
 
-Large lists are virtualized (only visible rows exist), so 10,000+ values open without freezing. `Searchable` lists use fuzzy matching sorted by best match. `Values` also accepts a dictionary `{ Key = "Display Label" }` — the key is the stored identity, the value is what renders; `DisabledValues` and `ValueImages` accept either keys or labels. `DragSelect` (multi, non-mobile) paints a selection by dragging across rows.
+Large lists are virtualized (only visible rows exist), so 10,000+ values open without freezing. `Searchable` lists use fuzzy matching sorted by best match: opening the dropdown turns the button itself into the search field (autofocused; `Escape` closes), and an empty result shows a "No results" row. `Values` also accepts a dictionary `{ Key = "Display Label" }` — the key is the stored identity, the value is what renders; `DisabledValues` and `ValueImages` accept either keys or labels. `DragSelect` (multi, non-mobile) paints a selection by dragging across rows.
 
 #### Methods
 

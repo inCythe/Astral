@@ -7781,6 +7781,12 @@ do
                 BackgroundShift = 6,
             })
 
+            SearchBox.InputBegan:Connect(function(Input: InputObject)
+                if Input.KeyCode == Enum.KeyCode.Escape then
+                    MenuTable:Close()
+                end
+            end)
+
             if Info.Multi then
                 ActionBar = New("Frame", {
                     BackgroundTransparency = 1,
@@ -7898,6 +7904,18 @@ do
 
         local DropdownOpen = false
 
+        local EmptyLabel = New("TextLabel", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(8, 0),
+            Size = UDim2.new(1, -16, 0, 21),
+            Text = "No results",
+            TextSize = 13,
+            TextTransparency = 0.5,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Visible = false,
+            Parent = InlineList,
+        })
+
         local MenuTable = {
             Active = false,
             Menu = InlineList,
@@ -7912,9 +7930,18 @@ do
             ArrowImage.ImageTransparency = Active and 0 or 0.5
             ArrowImage.Rotation = Active and 180 or 0
             if SearchBox then
-                if not Active then SearchBox.Text = "" end
+                if not Active then
+                    SearchBox.Text = ""
+                    if UserInputService:GetFocusedTextBox() == SearchBox then
+                        SearchBox:ReleaseFocus()
+                    end
+                end
                 SearchBox.Visible = Active
                 DisplayImage.Visible = not Active
+
+                if Active then
+                    task.spawn(SearchBox.CaptureFocus, SearchBox)
+                end
             end
             if ActionBar then
                 ActionBar.Visible = Active
@@ -8011,6 +8038,9 @@ do
             local RowHeight = ItemHeight or 21
             local MaxVisible = tonumber(Info.MaxVisibleDropdownItems) or 8
             local Y = math.clamp(ItemCount * RowHeight, 0, MaxVisible * RowHeight)
+            if ItemCount == 0 then
+                Y = RowHeight
+            end
 
             InlineList.CanvasSize = UDim2.fromOffset(0, ItemCount * RowHeight)
             InlineList.Size = UDim2.new(1, 0, 0, Y)
@@ -8135,6 +8165,8 @@ do
         function Dropdown:RefreshPool()
             local Total = #FilteredEntries
             local First = GetFirstVisibleIndex()
+
+            EmptyLabel.Visible = Total == 0
 
             for SlotIndex, Row in Pool do
                 local DataIndex = First + SlotIndex - 1
