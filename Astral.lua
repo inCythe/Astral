@@ -831,6 +831,71 @@ end
 local function NormalizeSearch(Search: string): string
     return (Search:gsub("%s+", ""))
 end
+
+local function TryFuzzyMatch(Text: any, Search: string): (boolean, number)
+    if typeof(Text) ~= "string" or Text == "" then
+        return false, 0
+    end
+
+    return FuzzyScore(Text:lower(), Search)
+end
+
+local function FuzzyMatchScore(Text: any, Search: string): number
+    if typeof(Text) ~= "string" or Text == "" then
+        return 0
+    end
+
+    local Normalized = NormalizeSearch(Text:lower())
+    local Matched, Score = FuzzyScore(Normalized, Search)
+    if not Matched then
+        return 0
+    end
+
+    if Normalized == Search then
+        Score += 1000
+    end
+
+    return Score
+end
+
+local function MatchesSearch(ElementInfo, Search: string, ForceMatch: boolean?): boolean
+    if not ElementInfo then
+        return false
+    end
+    if ForceMatch then
+        return true
+    end
+
+    if TryFuzzyMatch(ElementInfo.Text, Search) then
+        return true
+    end
+    if TryFuzzyMatch(ElementInfo.Tooltip, Search) then
+        return true
+    end
+    if TryFuzzyMatch(ElementInfo.DisabledTooltip, Search) then
+        return true
+    end
+
+    --// Optional: search inside Dropdown value lists, so e.g. searching a specific option name reveals the Dropdown that contains it \\--
+    if typeof(ElementInfo.Values) == "table" then
+        local Checked = 0
+        for Key, Value in ElementInfo.Values do
+            Checked += 1
+            if Checked > 200 then
+                break
+            end
+
+            if TryFuzzyMatch(Value, Search) or (typeof(Value) ~= "string" and TryFuzzyMatch(tostring(Value), Search)) then
+                return true
+            end
+            if typeof(Key) == "string" and TryFuzzyMatch(Key, Search) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
 local function Round(Value, Rounding)
     assert(Rounding >= 0, "Invalid rounding number.")
 
@@ -889,8 +954,9 @@ function Library:SetForceCheckbox(Value: boolean)
     end
 end
 
-local function CheckConditionalGroup(Box, Search)
+local function CheckConditionalGroup(Box, Search, ForceVisible: boolean?)
     local VisibleElements = 0
+    local BestScore = 0
 
     for _, ElementInfo in Box.Elements do
         if ElementInfo.Type == "Divider" then
@@ -900,13 +966,15 @@ local function CheckConditionalGroup(Box, Search)
 
             local Visible = false
 
-            if ElementInfo.Text:lower():match(Search) and ElementInfo.Visible then
+            if MatchesSearch(ElementInfo, Search, ForceVisible) and ElementInfo.Visible then
                 Visible = true
+                BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.Text, Search))
             else
                 ElementInfo.Base.Visible = false
             end
-            if ElementInfo.SubButton.Text:lower():match(Search) and ElementInfo.SubButton.Visible then
+            if MatchesSearch(ElementInfo.SubButton, Search, ForceVisible) and ElementInfo.SubButton.Visible then
                 Visible = true
+                BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.SubButton.Text, Search))
             else
                 ElementInfo.SubButton.Base.Visible = false
             end
@@ -918,9 +986,10 @@ local function CheckConditionalGroup(Box, Search)
             continue
         end
 
-        if ElementInfo.Text and ElementInfo.Text:lower():match(Search) and ElementInfo.Visible then
+        if ElementInfo.Text and MatchesSearch(ElementInfo, Search, ForceVisible) and ElementInfo.Visible then
             ElementInfo.Holder.Visible = true
             VisibleElements += 1
+            BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.Text, Search))
         else
             ElementInfo.Holder.Visible = false
         end
@@ -931,7 +1000,11 @@ local function CheckConditionalGroup(Box, Search)
             continue
         end
 
-        VisibleElements += CheckConditionalGroup(ConditionalGroup, Search)
+        local GroupVisible, GroupScore = CheckConditionalGroup(ConditionalGroup, Search, ForceVisible)
+        VisibleElements += GroupVisible
+        if GroupScore > BestScore then
+            BestScore = GroupScore
+        end
     end
 
     if Box.Resize then
@@ -939,8 +1012,9 @@ local function CheckConditionalGroup(Box, Search)
     end
 
     Box.Holder.Visible = VisibleElements > 0
-    return VisibleElements
+    return VisibleElements, BestScore
 end
+
 local function RestoreConditionalGroup(Box)
     for _, ElementInfo in Box.Elements do
         ElementInfo.Holder.Visible = typeof(ElementInfo.Visible) == "boolean" and ElementInfo.Visible or true
@@ -969,8 +1043,9 @@ local function RestoreConditionalGroup(Box)
     end
 end
 
-local function FilterBox(Box, Search)
+local function FilterBox(Box, Search, ForceVisible: boolean?)
     local VisibleElements = 0
+    local BestScore = 0
 
     for _, ElementInfo in Box.Elements do
         if ElementInfo.Type == "Divider" then
@@ -980,13 +1055,15 @@ local function FilterBox(Box, Search)
 
             local Visible = false
 
-            if ElementInfo.Text:lower():match(Search) and ElementInfo.Visible then
+            if MatchesSearch(ElementInfo, Search, ForceVisible) and ElementInfo.Visible then
                 Visible = true
+                BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.Text, Search))
             else
                 ElementInfo.Base.Visible = false
             end
-            if ElementInfo.SubButton.Text:lower():match(Search) and ElementInfo.SubButton.Visible then
+            if MatchesSearch(ElementInfo.SubButton, Search, ForceVisible) and ElementInfo.SubButton.Visible then
                 Visible = true
+                BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.SubButton.Text, Search))
             else
                 ElementInfo.SubButton.Base.Visible = false
             end
@@ -998,9 +1075,10 @@ local function FilterBox(Box, Search)
             continue
         end
 
-        if ElementInfo.Text and ElementInfo.Text:lower():match(Search) and ElementInfo.Visible then
+        if ElementInfo.Text and MatchesSearch(ElementInfo, Search, ForceVisible) and ElementInfo.Visible then
             ElementInfo.Holder.Visible = true
             VisibleElements += 1
+            BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.Text, Search))
         else
             ElementInfo.Holder.Visible = false
         end
@@ -1012,14 +1090,21 @@ local function FilterBox(Box, Search)
                 continue
             end
 
-            VisibleElements += CheckConditionalGroup(ConditionalGroup, Search)
+            local GroupVisible, GroupScore = CheckConditionalGroup(ConditionalGroup, Search, ForceVisible)
+            VisibleElements += GroupVisible
+            if GroupScore > BestScore then
+                BestScore = GroupScore
+            end
         end
     end
 
     if Box.SubSections then
         for _, SubSection in Box.SubSections do
-            local SubVisible = FilterBox(SubSection, Search)
+            local SubVisible, SubScore = FilterBox(SubSection, Search, ForceVisible)
             VisibleElements += SubVisible
+            if SubScore > BestScore then
+                BestScore = SubScore
+            end
 
             if SubVisible > 0 then
                 SubSection:Resize()
@@ -1028,18 +1113,28 @@ local function FilterBox(Box, Search)
         end
     end
 
-    return VisibleElements
+    return VisibleElements, BestScore
 end
 
 local function ApplySearchToTab(Tab, Search)
     if not Tab then
-        return
+        return false, 0
     end
 
     local HasVisible = false
+    local BestScore = 0
+
+    --// If the Tab itself matches Search (by name/description), don't filter out its contents -- pull everything in the Tab along with it \\--
+    local TabMatches = TryFuzzyMatch(Tab.Name, Search) or TryFuzzyMatch(Tab.Description, Search)
+    BestScore = math.max(BestScore, FuzzyMatchScore(Tab.Name, Search), FuzzyMatchScore(Tab.Description, Search))
 
     for _, Section in Tab.Sections do
-        local VisibleElements = FilterBox(Section, Search)
+        --// Optional: matching the Section's own name reveals every element inside it, without needing each one to match too
+        local SectionMatches = TabMatches or TryFuzzyMatch(Section.Name, Search)
+        BestScore = math.max(BestScore, FuzzyMatchScore(Section.Name, Search))
+
+        local VisibleElements, SectionScore = FilterBox(Section, Search, SectionMatches)
+        BestScore = math.max(BestScore, SectionScore)
 
         if VisibleElements > 0 then
             Section:Resize()
@@ -1051,10 +1146,25 @@ local function ApplySearchToTab(Tab, Search)
     for _, SectionGroup in Tab.SectionGroups do
         local VisibleTabs = 0
         local VisibleElements = {}
+        local SubTabScores = {}
 
         for _, SubTab in SectionGroup.Tabs do
-            VisibleElements[SubTab] = FilterBox(SubTab, Search)
+            VisibleElements[SubTab] = 0
+
+            --// Optional: matching a sub-tab's own name reveals every element inside it, without needing each one to match too
+            local SubTabMatches = TabMatches or TryFuzzyMatch(SubTab.Name, Search)
+            local SubScore = FuzzyMatchScore(SubTab.Name, Search)
+            BestScore = math.max(BestScore, SubScore)
+
+            local SubVisible, SubTabScore = FilterBox(SubTab, Search, SubTabMatches)
+            VisibleElements[SubTab] = SubVisible
+            SubScore = math.max(SubScore, SubTabScore)
+            BestScore = math.max(BestScore, SubScore)
+            SubTabScores[SubTab] = SubScore
         end
+
+        local BestSubTab = nil
+        local BestSubScore = -1
 
         for SubTab, Visible in VisibleElements do
             SubTab.ButtonHolder.Visible = Visible > 0
@@ -1062,18 +1172,28 @@ local function ApplySearchToTab(Tab, Search)
                 VisibleTabs += 1
                 HasVisible = true
 
-                if SectionGroup.ActiveTab == SubTab then
-                    SubTab:Resize()
-                elseif SectionGroup.ActiveTab and VisibleElements[SectionGroup.ActiveTab] == 0 then
-                    SubTab:Show()
+                local SubScore = SubTabScores[SubTab] or 0
+                if SubScore > BestSubScore then
+                    BestSubScore = SubScore
+                    BestSubTab = SubTab
                 end
             end
+        end
+
+        local ActiveSubTab = SectionGroup.ActiveTab
+        local ActiveSubVisible = ActiveSubTab and (VisibleElements[ActiveSubTab] or 0) > 0
+        local ActiveSubScore = ActiveSubTab and (SubTabScores[ActiveSubTab] or -1) or -1
+
+        if ActiveSubVisible and ActiveSubScore >= BestSubScore then
+            ActiveSubTab:Resize()
+        elseif BestSubTab then
+            BestSubTab:Show()
         end
 
         SectionGroup.BoxHolder.Visible = VisibleTabs > 0
     end
 
-    return HasVisible
+    return HasVisible, BestScore
 end
 
 local function RestoreBox(Box)
@@ -1133,17 +1253,18 @@ end
 function Library:UpdateSearch(SearchText)
     Library.SearchText = SearchText
 
-    local TabsToReset = {}
-
-    if Library.LastSearchTab and typeof(Library.LastSearchTab) == "table" then
-        table.insert(TabsToReset, Library.LastSearchTab)
+    local TabsToSearch = {}
+    for _, Tab in Library.Tabs do
+        if typeof(Tab) == "table" and not Tab.IsKeyTab then
+            table.insert(TabsToSearch, Tab)
+        end
     end
 
-    for _, Tab in TabsToReset do
+    for _, Tab in TabsToSearch do
         ResetTab(Tab)
     end
 
-    local Search = SearchText:lower()
+    local Search = NormalizeSearch(SearchText:lower())
     if Trim(Search) == "" then
         Library.Searching = false
         Library.LastSearchTab = nil
@@ -1157,11 +1278,46 @@ function Library:UpdateSearch(SearchText)
 
     Library.Searching = true
 
-    if Library.ActiveTab then
-        ApplySearchToTab(Library.ActiveTab, Search)
+    local BestTab = nil
+    local BestScore = -1
+    local ActiveScore = -1
+    local ActiveHasVisible = false
+
+    for _, Tab in TabsToSearch do
+        local HasVisible, Score = ApplySearchToTab(Tab, Search)
+        if not HasVisible then
+            continue
+        end
+
+        if Tab == Library.ActiveTab then
+            ActiveHasVisible = true
+            ActiveScore = Score
+        end
+        if Score > BestScore then
+            BestScore = Score
+            BestTab = Tab
+        end
     end
 
-    Library.LastSearchTab = Library.ActiveTab
+    local StayOnActive = ActiveHasVisible and ActiveScore >= BestScore
+    if StayOnActive and Library.ActiveTab then
+        Library.ActiveTab:RefreshSides()
+    elseif BestTab then
+        local SearchMarker = SearchText
+        task.defer(function()
+            if Library.SearchText ~= SearchMarker then
+                return
+            end
+
+            if Library.ActiveTab ~= BestTab then
+                BestTab:Show()
+            elseif Library.ActiveTab then
+                Library.ActiveTab:RefreshSides()
+            end
+        end)
+    end
+
+    Library.LastSearchTab = nil
 end
 
 function Library:AddToRegistry(Inst, Properties)
@@ -11506,6 +11662,7 @@ function Library:CreateWindow(WindowInfo)
             SectionCount = 0,
             SectionGroups = {},
             ConditionalSections = {},
+            Name = Name,
             Description = Description,
             Tooltip = Tooltip,
             TooltipTable = nil,
@@ -11771,6 +11928,7 @@ function Library:CreateWindow(WindowInfo)
                 Container = SectionContainer,
 
                 Tab = Tab,
+                Name = Info.Name,
                 ConditionalGroups = {},
                 SubSections = {},
                 Elements = {},
@@ -12307,6 +12465,7 @@ function Library:CreateWindow(WindowInfo)
                     },
 
                     Tab = Tab,
+                    Name = Name,
                     Elements = {},
                     ConditionalGroups = {},
                     SubSections = {},
