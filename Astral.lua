@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix2",
+    BuildId = "virt-fix3",
     BuildDate = "2026-10-11",
     SearchVirtualized = true,
 
@@ -15465,21 +15465,56 @@ function Library:CreateWindow(WindowInfo)
             end
             Needed = math.min(Needed, #RowPool)
 
-            for I, Handle in RowPool do
-                if I <= Needed then
-                    local DataIndex = First + I - 1
-                    if DataIndex <= Total then
-                        if Handle.Index ~= DataIndex or Handle.Data ~= RowData[DataIndex] then
-                            ConfigureRow(Handle, RowData[DataIndex], DataIndex)
-                        else
-                            Handle.Btn.Visible = true
-                        end
-                    else
-                        Handle.Data = nil
-                        Handle.Index = nil
-                        Handle.Btn.Visible = false
-                    end
+            --// Rotation reuse: handles already showing an index in the new
+            --// window keep it (position is index-derived, so nothing moves).
+            --// Only genuinely new edge rows pay ConfigureRow. Scrolling one
+            --// row-stride used to re-parse RichText on all ~40 rows. \\--
+            local ByIndex = {}
+            for _, Handle in RowPool do
+                if Handle.Index then
+                    ByIndex[Handle.Index] = Handle
+                end
+            end
+
+            local ShownCount = 0
+            local Used = {}
+            for DataIndex = First, Last do
+                if ShownCount >= #RowPool then
+                    break
+                end
+                local Handle = ByIndex[DataIndex]
+                if Handle then
+                    Used[Handle] = true
+                    Handle.Btn.Visible = true
                 else
+                    local Free = nil
+                    for _, Candidate in RowPool do
+                        if not Used[Candidate] and (not Candidate.Index or Candidate.Index < First or Candidate.Index > Last) then
+                            Free = Candidate
+                            break
+                        end
+                    end
+                    if not Free then
+                        for _, Candidate in RowPool do
+                            if not Used[Candidate] then
+                                Free = Candidate
+                                break
+                            end
+                        end
+                    end
+                    if Free then
+                        if ByIndex[Free.Index] == Free then
+                            ByIndex[Free.Index] = nil
+                        end
+                        ConfigureRow(Free, RowData[DataIndex], DataIndex)
+                        Used[Free] = true
+                    end
+                end
+                ShownCount += 1
+            end
+
+            for _, Handle in RowPool do
+                if not Used[Handle] then
                     Handle.Data = nil
                     Handle.Index = nil
                     Handle.Btn.Visible = false
