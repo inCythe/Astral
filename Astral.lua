@@ -7692,6 +7692,7 @@ do
 
         local DisplayContainer = New("TextButton", {
             BackgroundColor3 = "MainColor",
+            LayoutOrder = 1,
             Size = UDim2.new(1, 0, 0, 21),
             Text = "",
             TextTransparency = 1,
@@ -7704,7 +7705,7 @@ do
             Parent = DisplayContainer,
         })
 
-        New("UIStroke", {
+        local DisplayStroke = New("UIStroke", {
             Color = "OutlineColor",
             Parent = DisplayContainer,
         })
@@ -7753,90 +7754,58 @@ do
         Library:RegisterIconInstance(ArrowImage, "chevron-up")
 
         local SearchBox
-        local SearchBar
         local ActionBar
         --// Forward declaration: the All/Clear buttons below reference the row
         --// pool, which is only filled further down. Without this they would
         --// resolve Pool as a nil global and error on click. \\--
         local Pool = {}
+        --// Search lives inside the dropdown button itself: opening the menu
+        --// swaps the selection text for the search field, and All/Clear sit
+        --// in a minimal ghost-button row underneath. \\--
         if Info.Searchable then
-            local RightBtnsWidth = Info.Multi and 88 or 0
-
-            SearchBar = New("Frame", {
-                BackgroundColor3 = "MainColor",
-                Size = UDim2.new(1, 0, 0, 28),
-                Visible = false,
-                Parent = Holder,
-            })
-            local SearchBarStroke = New("UIStroke", { Color = "OutlineColor", Parent = SearchBar })
-            if Library.CornerRadiusDropdown == true then
-                table.insert(Library.Corners, New("UICorner", {
-                    CornerRadius = UDim.new(0, Library.CornerRadius / 2),
-                    Parent = SearchBar,
-                }))
-            end
-
-            New("UIListLayout", {
-                FillDirection = Enum.FillDirection.Horizontal,
-                HorizontalAlignment = Enum.HorizontalAlignment.Left,
-                VerticalAlignment = Enum.VerticalAlignment.Center,
-                Padding = UDim.new(0, 0),
-                Parent = SearchBar,
-            })
-            New("UIPadding", {
-                PaddingLeft = UDim.new(0, 8),
-                PaddingRight = UDim.new(0, 8),
-                PaddingTop = UDim.new(0, 4),
-                PaddingBottom = UDim.new(0, 4),
-                Parent = SearchBar,
-            })
-
             SearchBox = New("TextBox", {
                 BackgroundTransparency = 1,
                 ClearTextOnFocus = false,
                 PlaceholderText = "Search...",
-                Size = UDim2.new(1, Info.Multi and -88 or 0, 1, 0),
+                Size = UDim2.new(1, -24, 1, 0),
                 Text = "",
                 TextSize = 13,
                 TextTruncate = Enum.TextTruncate.AtEnd,
                 TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = SearchBar,
+                Visible = false,
+                Parent = DisplayContainer,
             })
 
-            Library:AddFocusHighlight(SearchBox, SearchBarStroke, {
-                BackgroundTarget = SearchBar,
+            Library:AddFocusHighlight(SearchBox, DisplayStroke, {
+                BackgroundTarget = DisplayContainer,
                 BackgroundShift = 6,
             })
 
             if Info.Multi then
-
-                New("Frame", {
-                    BackgroundColor3 = "OutlineColor",
-                    BorderSizePixel = 0,
-                    Size = UDim2.new(0, 1, 1, 0),
-                    Parent = SearchBar,
+                ActionBar = New("Frame", {
+                    BackgroundTransparency = 1,
+                    LayoutOrder = 2,
+                    Size = UDim2.new(1, 0, 0, 20),
+                    Visible = false,
+                    Parent = Holder,
+                })
+                New("UIListLayout", {
+                    FillDirection = Enum.FillDirection.Horizontal,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    Padding = UDim.new(0, 10),
+                    Parent = ActionBar,
                 })
 
                 local function MakeActionBtn(BtnText, Callback)
                     local Btn = New("TextButton", {
-                        BackgroundColor3 = "BackgroundColor",
-                        Size = UDim2.new(0, RightBtnsWidth / 2 - 1, 1, 0),
+                        BackgroundTransparency = 1,
+                        Size = UDim2.new(0, 0, 1, 0),
+                        AutomaticSize = Enum.AutomaticSize.X,
                         Text = BtnText,
                         TextSize = 12,
                         TextTransparency = 0.5,
-                        Parent = SearchBar,
-                    })
-                    table.insert(
-                        Library.Corners,
-                        New("UICorner", {
-                            CornerRadius = UDim.new(0, 4),
-                            Parent = Btn,
-                        })
-                    )
-                    New("UIStroke", {
-                        Color = "OutlineColor",
-                        Transparency = 0.5,
-                        Parent = Btn,
+                        Parent = ActionBar,
                     })
                     Btn.MouseEnter:Connect(function()
                         TweenService:Create(Btn, Library.TweenInfo, { TextTransparency = 0 }):Play()
@@ -7911,6 +7880,7 @@ do
             AutomaticCanvasSize = Enum.AutomaticSize.None,
             BackgroundColor3 = "MainColor",
             CanvasSize = UDim2.fromOffset(0, 0),
+            LayoutOrder = 3,
             ScrollBarImageColor3 = "OutlineColor",
             ScrollBarThickness = 3,
             Size = UDim2.new(1, 0, 0, 0),
@@ -7941,13 +7911,15 @@ do
             InlineList.Visible = Active
             ArrowImage.ImageTransparency = Active and 0 or 0.5
             ArrowImage.Rotation = Active and 180 or 0
-            if SearchBar then
-                if SearchBox then SearchBox.Text = "" end
-                SearchBar.Visible = Active
+            if SearchBox then
+                if not Active then SearchBox.Text = "" end
+                SearchBox.Visible = Active
+                DisplayImage.Visible = not Active
             end
             if ActionBar then
                 ActionBar.Visible = Active
             end
+            Dropdown:UpdateColors()
             Section:Resize()
         end
 
@@ -7968,7 +7940,7 @@ do
             end
 
             Label.TextTransparency = Dropdown.Disabled and 0.8 or 0
-            DisplayButton.TextTransparency = Dropdown.Disabled and 0.8 or 0
+            DisplayButton.TextTransparency = (MenuTable.Active and SearchBox) and 1 or (Dropdown.Disabled and 0.8 or 0)
             DisplayImage.ImageTransparency = Dropdown.Disabled and 0.8 or 0
             ArrowImage.ImageTransparency = Dropdown.Disabled and 0.8 or MenuTable.Active and 0 or 0.5
         end
