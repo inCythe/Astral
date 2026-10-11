@@ -15061,7 +15061,8 @@ function Library:CreateWindow(WindowInfo)
                 .. EscapeRichText(Text:sub(OrigEnd + 1))
         end
 
-        local function MakeRow(Cfg, Order)
+        --// Legacy non-virtualized row builder (kept unused; virtualization below). \\--
+        local function MakeRowLegacy(Cfg, Order)
             local Depth = Cfg.Depth or 0
             local Z     = 12002
 
@@ -15213,14 +15214,279 @@ function Library:CreateWindow(WindowInfo)
             return Btn
         end
 
-        local ActiveRows      = {}
+        --// Virtualized results: RowData holds ALL matches (cheap tables);
+        --// only the visible window (+overscan) gets real instances. \\--
+        local RowData         = {}
+        local RowPool         = {}
         local BuildGeneration = 0
+        local ActiveRows      = RowPool --// legacy alias; pooled buttons live here \\--
+
+        local TypeLabels = {
+            Button = "BTN", Toggle = "TGL", Slider = "SLD",
+            Dropdown = "DROP", ColorPicker = "CLR", Input = "TXT",
+            Label = "LBL", KeyPicker = "KEY", SubButton = "SUB",
+            Checkbox = "CHK", ProgressBar = "PRG", Viewport = "VPT",
+            Image = "IMG", Video = "VID",
+        }
+
+        local MaxDepthLines = 6
+        local Overscan = 12
+
+        local function BuildDisplayText(TextValue: string, Highlight: string?): string
+            if Highlight and Highlight ~= "" then
+                return HighlightMatch(TextValue, Highlight)
+            end
+            return EscapeRichText(TextValue)
+        end
+
+        local function CreatePooledRow()
+            local Z = 12002
+
+            local Btn = New("TextButton", {
+                BackgroundColor3       = "MainColor",
+                BackgroundTransparency = 1,
+                BorderSizePixel        = 0,
+                Size                   = UDim2.new(1, 0, 0, RowH),
+                Text                   = "",
+                AutoButtonColor        = false,
+                ZIndex                 = Z,
+                Visible                = false,
+                Parent                 = ScrollFrame,
+            })
+            Library:AddToRegistry(Btn, { BackgroundColor3 = "MainColor" })
+            New("UICorner", { CornerRadius = UDim.new(0, 4), Parent = Btn })
+
+            local VLines = {}
+            for _ = 1, MaxDepthLines do
+                local VLine = New("Frame", {
+                    BackgroundColor3 = "OutlineColor",
+                    BorderSizePixel  = 0,
+                    Size     = UDim2.new(0, 1, 0, RowH),
+                    ZIndex   = Z + 1,
+                    Visible  = false,
+                    Parent   = Btn,
+                })
+                Library:AddToRegistry(VLine, { BackgroundColor3 = "OutlineColor" })
+                table.insert(VLines, VLine)
+            end
+
+            local HLine = New("Frame", {
+                BackgroundColor3 = "OutlineColor",
+                BorderSizePixel  = 0,
+                Size     = UDim2.new(0, Indent - 2, 0, 1),
+                ZIndex   = Z + 1,
+                Visible  = false,
+                Parent   = Btn,
+            })
+            Library:AddToRegistry(HLine, { BackgroundColor3 = "OutlineColor" })
+
+            local Badge = New("Frame", {
+                BackgroundTransparency = 0,
+                BorderSizePixel        = 0,
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -4, 0.5, 0),
+                Size     = UDim2.new(0, 34, 0, 16),
+                ZIndex   = Z + 2,
+                Visible  = false,
+                Parent   = Btn,
+            })
+            New("UICorner", { CornerRadius = UDim.new(0, 3), Parent = Badge })
+            local BadgeLabel = New("TextLabel", {
+                BackgroundTransparency = 1,
+                Size           = UDim2.fromScale(1, 1),
+                Text           = "",
+                TextColor3     = Color3.new(1, 1, 1),
+                TextSize       = 9,
+                Font           = Enum.Font.GothamBold,
+                ZIndex         = Z + 3,
+                Parent         = Badge,
+            })
+
+            local Lbl = New("TextLabel", {
+                BackgroundTransparency = 1,
+                Size           = UDim2.new(1, 0, 1, 0),
+                Text           = "",
+                RichText       = true,
+                TextColor3     = "FontColor",
+                TextSize       = 12,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate   = Enum.TextTruncate.AtEnd,
+                ClipsDescendants = true,
+                ZIndex         = Z + 1,
+                Parent         = Btn,
+            })
+
+            local Handle = {
+                Btn = Btn,
+                VLines = VLines,
+                HLine = HLine,
+                Badge = Badge,
+                BadgeLabel = BadgeLabel,
+                Lbl = Lbl,
+                Data = nil,
+            }
+
+            Btn.MouseEnter:Connect(function()
+                TweenService:Create(Btn, RowHoverTween, { BackgroundTransparency = 0.82 }):Play()
+            end)
+            Btn.MouseLeave:Connect(function()
+                TweenService:Create(Btn, RowHoverTween, { BackgroundTransparency = 1 }):Play()
+            end)
+            --// Down instead of Click: fires even if a rebuild reuses this
+            --// instance between press and release. \\--
+            Btn.MouseButton1Down:Connect(function()
+                local Data = Handle.Data
+                if Data and Data.OnActivate then
+                    task.spawn(Data.OnActivate)
+                end
+            end)
+
+            table.insert(RowPool, Handle)
+            return Handle
+        end
+
+        local function ConfigureRow(Handle, Cfg, Index: number)
+            Handle.Data = Cfg
+            local Btn, Lbl = Handle.Btn, Handle.Lbl
+            local Depth: number = Cfg.Depth or 0
+
+            Btn.Visible = true
+            Btn.Position = UDim2.fromOffset(0, (Index - 1) * RowH)
+
+            for I, VLine in Handle.VLines do
+                if I <= Depth then
+                    local LineX = (I - 1) * Indent + 5
+                    local IsDeepest = (I == Depth)
+                    local Terminating = IsDeepest and (Cfg.IsLast or false)
+                    VLine.Visible = true
+                    VLine.Position = UDim2.new(0, LineX, 0, 0)
+                    VLine.Size = UDim2.new(0, 1, 0, Terminating and RowH / 2 or RowH)
+                else
+                    VLine.Visible = false
+                end
+            end
+
+            if Depth > 0 then
+                local LineX = (Depth - 1) * Indent + 5
+                Handle.HLine.Visible = true
+                Handle.HLine.Position = UDim2.new(0, LineX, 0, RowH / 2 - 1)
+            else
+                Handle.HLine.Visible = false
+            end
+
+            local TextX = Depth * Indent + (Depth > 0 and 2 or 0)
+            local BadgeW = 0
+
+            if Cfg.BadgeText then
+                BadgeW = 34
+                Handle.Badge.Visible = true
+                Handle.BadgeLabel.Text = Cfg.BadgeText
+                local Step = Cfg.BadgeShadeStep or 1
+                local ShadeFn = function() return Library:GetAccentShade(Step) end
+                Library:AddToRegistry(Handle.Badge, { BackgroundColor3 = ShadeFn })
+                Handle.Badge.BackgroundColor3 = ShadeFn()
+            else
+                Handle.Badge.Visible = false
+            end
+
+            Lbl.Position = UDim2.new(0, TextX, 0, 0)
+            Lbl.Size = UDim2.new(1, -(TextX + (BadgeW > 0 and BadgeW + 8 or 0)), 1, 0)
+            Lbl.Text = Cfg.DisplayText or Cfg.Text
+            Lbl.FontFace = Cfg.IsTab and RebuildTabFont or RebuildRowFont
+            Lbl.TextSize = Cfg.IsTab and 13 or 12
+            Lbl.TextTransparency = Cfg.IsTab and 0 or (Cfg.IsElement and 0.35 or 0.1)
+
+            local ColorValue = Cfg.RowColorFn or "FontColor"
+            Library:AddToRegistry(Lbl, { TextColor3 = ColorValue })
+            if typeof(ColorValue) == "function" then
+                Lbl.TextColor3 = ColorValue()
+            else
+                local Resolved = GetSchemeValue(ColorValue)
+                if Resolved then
+                    Lbl.TextColor3 = Resolved
+                end
+            end
+        end
+
+        local function RenderVisible()
+            local Total = #RowData
+            if Total == 0 or not SearchOverlay.Visible then
+                return
+            end
+
+            local ScrollY = ScrollFrame.CanvasPosition.Y
+            local ViewH = ScrollFrame.AbsoluteSize.Y
+            if ViewH <= 1 then
+                ViewH = math.min(400, Total * RowH)
+            end
+
+            local First = math.clamp(math.floor(ScrollY / RowH) + 1 - Overscan, 1, Total)
+            local Last = math.clamp(math.ceil((ScrollY + ViewH) / RowH) + Overscan, 1, Total)
+            if Last < First then
+                Last = First
+            end
+
+            local Needed = Last - First + 1
+            while #RowPool < Needed do
+                CreatePooledRow()
+                if #RowPool > 64 then
+                    break
+                end
+            end
+            Needed = math.min(Needed, #RowPool)
+
+            for I, Handle in RowPool do
+                if I <= Needed then
+                    local DataIndex = First + I - 1
+                    if DataIndex <= Total then
+                        ConfigureRow(Handle, RowData[DataIndex], DataIndex)
+                    else
+                        Handle.Data = nil
+                        Handle.Btn.Visible = false
+                    end
+                else
+                    Handle.Data = nil
+                    Handle.Btn.Visible = false
+                end
+            end
+        end
+
+        local RenderQueued = false
+        local function QueueRender()
+            if RenderQueued then
+                return
+            end
+            RenderQueued = true
+            task.defer(function()
+                RenderQueued = false
+                if SearchOverlay.Visible and #RowData > 0 then
+                    RenderVisible()
+                end
+            end)
+        end
+
+        do
+            local ListLayout = ScrollFrame:FindFirstChildOfClass("UIListLayout")
+            if ListLayout then
+                ListLayout.Enabled = false
+            end
+            ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.None
+            ScrollFrame.CanvasSize = UDim2.fromOffset(0, 0)
+            ScrollFrame.CanvasPosition = Vector2.zero
+        end
+        Library:GiveSignal(ScrollFrame:GetPropertyChangedSignal("CanvasPosition"):Connect(QueueRender))
+        Library:GiveSignal(ScrollFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(QueueRender))
 
         local function ClearRows()
-            for _, Row in ActiveRows do
-                Row:Destroy()
+            table.clear(RowData)
+            for _, Handle in RowPool do
+                Handle.Data = nil
+                if Handle.Btn then
+                    Handle.Btn.Visible = false
+                end
             end
-            table.clear(ActiveRows)
+            ScrollFrame.CanvasSize = UDim2.fromOffset(0, 0)
+            ScrollFrame.CanvasPosition = Vector2.zero
         end
 
         local function CloseOverlayImpl()
@@ -15319,9 +15585,43 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local RowOrder = 0
-            --// Unfiltered open used to build the ENTIRE library (no cap),
-            --// which is what froze the game. Cap both paths. \\--
-            local MaxRows = Filtering and 300 or 120
+            --// No cap: virtualization renders only the visible window,
+            --// so the full result set stays available. \\--
+            local QueryHighlight = Filtering and Search or nil
+
+            local function PushRow(Cfg)
+                RowOrder += 1
+                local Idx = RowOrder
+
+                local BadgeText, BadgeShadeStep = nil, nil
+                if Cfg.IsElement and Cfg.ElementType then
+                    BadgeShadeStep = (Idx % 2 == 0) and 2 or 1
+                    BadgeText = TypeLabels[Cfg.ElementType] or Cfg.ElementType:upper():sub(1, 4)
+                end
+
+                local ColorFn = nil
+                if Cfg.IsTab then
+                    ColorFn = function() return Library:GetAccentShade(1) end
+                elseif Cfg.IsSection then
+                    ColorFn = function() return Library:GetAccentShade(2) end
+                elseif Cfg.IsSubSection then
+                    ColorFn = function() return Library:GetAccentShade(1) end
+                end
+
+                Cfg.DisplayText = BuildDisplayText(Cfg.Text, QueryHighlight)
+                Cfg.BadgeText = BadgeText
+                Cfg.BadgeShadeStep = BadgeShadeStep
+                Cfg.RowColorFn = ColorFn
+                RowData[Idx] = Cfg
+
+                if Idx % 500 == 0 then
+                    task.wait()
+                    if MyGen ~= BuildGeneration then
+                        return false
+                    end
+                end
+                return true
+            end
 
             for _, TabEntry in TabList do
                 if MyGen ~= BuildGeneration then return end
@@ -15376,85 +15676,63 @@ function Library:CreateWindow(WindowInfo)
 
                 if #TabMatches == 0 then continue end
 
-                RowOrder += 1
-                table.insert(ActiveRows, MakeRow({
+                if not PushRow({
                     Text       = TabName,
                     Depth      = 0,
                     IsTab      = true,
-                    Highlight  = Filtering and Search or nil,
                     OnActivate = function() NavigateTo(Tab, nil, nil) end,
-                }, RowOrder))
-                if RowOrder >= MaxRows then break end
-                if RowOrder % 20 == 0 then
-                    task.wait()
-                    if MyGen ~= BuildGeneration then return end
-                end
+                }) then return end
 
                 for Si, SecEntry in TabMatches do
                     if MyGen ~= BuildGeneration then return end
-                    if RowOrder >= MaxRows then break end
                     local IsLastSec = Si == #TabMatches
                     local Section   = SecEntry.Section
 
-                    RowOrder += 1
-                    table.insert(ActiveRows, MakeRow({
+                    if not PushRow({
                         Text         = SecEntry.SectionName,
                         Depth        = 1,
                         IsSection    = true,
                         SectionMatch = SecEntry.SectionMatch,
-                        Highlight    = Filtering and Search or nil,
                         IsLast       = IsLastSec and #SecEntry.Elements == 0,
                         OnActivate   = function() NavigateTo(Tab, Section, nil) end,
-                    }, RowOrder))
-                    if RowOrder % 20 == 0 then
-                        task.wait()
-                        if MyGen ~= BuildGeneration then return end
-                    end
-                    if RowOrder >= MaxRows then break end
+                    }) then return end
 
                     for Ei, ElEntry in SecEntry.Elements do
                         if MyGen ~= BuildGeneration then return end
-                        if RowOrder >= MaxRows then break end
 
                         local RowDepth = 1 + (ElEntry.Depth or 1)
                         local IsLastInGroup = Ei == #SecEntry.Elements
 
                         if ElEntry.IsSubSection then
                             local TargetSubSection = ElEntry.SubSection
-                            RowOrder += 1
-                            table.insert(ActiveRows, MakeRow({
+                            if not PushRow({
                                 Text         = ElEntry.Text,
                                 Depth        = RowDepth,
 
                                 IsSubSection = true,
                                 SectionMatch = true,
-                                Highlight    = Filtering and Search or nil,
                                 IsLast       = IsLastInGroup,
                                 OnActivate   = function() NavigateTo(Tab, Section, nil, TargetSubSection) end,
-                            }, RowOrder))
+                            }) then return end
                         else
                             local ElInfo = ElEntry.Info
-                            RowOrder += 1
-                            table.insert(ActiveRows, MakeRow({
+                            if not PushRow({
                                 Text        = ElEntry.Text,
                                 Depth       = RowDepth,
                                 IsElement   = true,
                                 IsLast      = IsLastInGroup,
                                 ElementType = ElEntry.ElType,
-                                Highlight   = Filtering and Search or nil,
                                 OnActivate  = function() NavigateTo(Tab, Section, ElInfo) end,
-                            }, RowOrder))
+                            }) then return end
                         end
                     end
-
-                    if RowOrder >= MaxRows then break end
-                    if RowOrder % 20 == 0 then
-                        task.wait()
-                        if MyGen ~= BuildGeneration then return end
-                    end
                 end
-                if RowOrder >= MaxRows then break end
             end
+
+            if MyGen ~= BuildGeneration then return end
+            ScrollFrame.CanvasSize = UDim2.fromOffset(0, #RowData * RowH + 6)
+            ScrollFrame.CanvasPosition = Vector2.zero
+            RenderVisible()
         end
 
         local function OpenOverlay()
