@@ -8034,9 +8034,13 @@ do
 
         function Dropdown:RecalculateListSize(Count)
             local ItemCount = Count or #FilteredEntries
-            local Y = math.clamp(ItemCount * ItemHeight, 0, Info.MaxVisibleDropdownItems * ItemHeight)
+            --// Defensive defaults: this also runs from SetDPIScale with no
+            --// args, so never assume the template values are present. \\--
+            local RowHeight = ItemHeight or 21
+            local MaxVisible = tonumber(Info.MaxVisibleDropdownItems) or 8
+            local Y = math.clamp(ItemCount * RowHeight, 0, MaxVisible * RowHeight)
 
-            InlineList.CanvasSize = UDim2.fromOffset(0, ItemCount * ItemHeight)
+            InlineList.CanvasSize = UDim2.fromOffset(0, ItemCount * RowHeight)
             InlineList.Size = UDim2.new(1, 0, 0, Y)
             Section:Resize()
         end
@@ -8058,7 +8062,7 @@ do
         end
 
         local ItemHeight = 21
-        local PoolSize = math.max(1, Info.MaxVisibleDropdownItems + 2)
+        local PoolSize = math.max(1, (tonumber(Info.MaxVisibleDropdownItems) or 8) + 2)
         local FilteredEntries = {}
 
         local function RecomputeFilteredEntries()
@@ -8149,7 +8153,9 @@ do
             end
 
             local MaxFirst = Total - PoolSize + 1
-            local ScrollY = InlineList.CanvasPosition.Y / Library.DPIScale
+            local DpiScale = tonumber(Library.DPIScale) or 1
+            if DpiScale == 0 then DpiScale = 1 end
+            local ScrollY = InlineList.CanvasPosition.Y / DpiScale
             local Index = math.floor(ScrollY / ItemHeight) + 1
             return math.clamp(Index, 1, MaxFirst)
         end
