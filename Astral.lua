@@ -7755,6 +7755,10 @@ do
         local SearchBox
         local SearchBar
         local ActionBar
+        --// Forward declaration: the All/Clear buttons below reference the row
+        --// pool, which is only filled further down. Without this they would
+        --// resolve Pool as a nil global and error on click. \\--
+        local Pool = {}
         if Info.Searchable then
             local RightBtnsWidth = Info.Multi and 88 or 0
 
@@ -7789,9 +7793,12 @@ do
 
             SearchBox = New("TextBox", {
                 BackgroundTransparency = 1,
+                ClearTextOnFocus = false,
                 PlaceholderText = "Search...",
                 Size = UDim2.new(1, Info.Multi and -88 or 0, 1, 0),
+                Text = "",
                 TextSize = 13,
+                TextTruncate = Enum.TextTruncate.AtEnd,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 Parent = SearchBar,
             })
@@ -7812,12 +7819,24 @@ do
 
                 local function MakeActionBtn(BtnText, Callback)
                     local Btn = New("TextButton", {
-                        BackgroundTransparency = 1,
+                        BackgroundColor3 = "BackgroundColor",
                         Size = UDim2.new(0, RightBtnsWidth / 2 - 1, 1, 0),
                         Text = BtnText,
                         TextSize = 12,
                         TextTransparency = 0.5,
                         Parent = SearchBar,
+                    })
+                    table.insert(
+                        Library.Corners,
+                        New("UICorner", {
+                            CornerRadius = UDim.new(0, 4),
+                            Parent = Btn,
+                        })
+                    )
+                    New("UIStroke", {
+                        Color = "OutlineColor",
+                        Transparency = 0.5,
+                        Parent = Btn,
                     })
                     Btn.MouseEnter:Connect(function()
                         TweenService:Create(Btn, Library.TweenInfo, { TextTransparency = 0 }):Play()
@@ -8013,11 +8032,6 @@ do
             Dropdown.Changed = Func
         end
 
-        local ItemHeight = 21
-        local PoolSize = math.max(1, Info.MaxVisibleDropdownItems + 2)
-        local Pool = {}
-        local FilteredEntries = {}
-
         function Dropdown:RecalculateListSize(Count)
             local ItemCount = Count or #FilteredEntries
             local Y = math.clamp(ItemCount * ItemHeight, 0, Info.MaxVisibleDropdownItems * ItemHeight)
@@ -8045,7 +8059,6 @@ do
 
         local ItemHeight = 21
         local PoolSize = math.max(1, Info.MaxVisibleDropdownItems + 2)
-        local Pool = {}
         local FilteredEntries = {}
 
         local function RecomputeFilteredEntries()
@@ -14839,13 +14852,13 @@ function Library:CreateWindow(WindowInfo)
                 local EText = Info.Text
                 if not EText or not Info.Visible then continue end
 
-                if not Filtering or SectionMatches or EText:lower():match(Search) then
+                if not Filtering or SectionMatches or TryFuzzyMatch(EText, Search) then
                     table.insert(Out, { Text = EText, Info = Info, ElType = Info.Type, Depth = Depth })
                 end
 
                 if Info.SubButton and Info.SubButton.Text and Info.SubButton.Visible then
                     local SubText = Info.SubButton.Text
-                    if not Filtering or SectionMatches or SubText:lower():match(Search) then
+                    if not Filtering or SectionMatches or TryFuzzyMatch(SubText, Search) then
 
                         table.insert(Out, { Text = SubText, Info = Info.SubButton, ElType = "SubButton", Depth = Depth })
                     end
@@ -14865,7 +14878,7 @@ function Library:CreateWindow(WindowInfo)
             if Box.SubSections then
 
                 for _, SubSection in Box.SubSections do
-                    local SubMatches = SectionMatches or (Filtering and SubSection.Name and SubSection.Name:lower():match(Search))
+                    local SubMatches = SectionMatches or (Filtering and SubSection.Name and TryFuzzyMatch(SubSection.Name, Search))
                     local SubOut = {}
                     CollectElements(SubSection, Search, SubMatches, Filtering, SubOut, Depth + 1)
 
@@ -15077,7 +15090,7 @@ function Library:CreateWindow(WindowInfo)
             ClearRows()
             ScrollFrame.CanvasPosition = Vector2.zero
 
-            local Search    = SearchText:lower():match("^%s*(.-)%s*$") or ""
+            local Search    = NormalizeSearch(SearchText:lower():match("^%s*(.-)%s*$") or "")
             local Filtering = Search ~= ""
 
             local TabList  = {}
@@ -15114,6 +15127,7 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local RowOrder = 0
+            local MaxRows = 300
 
             for _, TabEntry in TabList do
                 if MyGen ~= BuildGeneration then return end
@@ -15134,7 +15148,7 @@ function Library:CreateWindow(WindowInfo)
                 for _, SectionEntry in SortedSections do
                     local SectionName = SectionEntry.Name
                     local Section     = SectionEntry.Section
-                    local SectionMatches = not Filtering or SectionName:lower():match(Search)
+                    local SectionMatches = not Filtering or TryFuzzyMatch(SectionName, Search)
                     local ElMatches = {}
                     CollectElements(Section, Search, SectionMatches, Filtering, ElMatches)
                     if SectionMatches or #ElMatches > 0 then
@@ -15156,7 +15170,7 @@ function Library:CreateWindow(WindowInfo)
                         for _, PageEntry in SortedPages do
                             local PageName = PageEntry.Name
                             local Page     = PageEntry.Page
-                            local PageMatches = not Filtering or PageName:lower():match(Search)
+                            local PageMatches = not Filtering or TryFuzzyMatch(PageName, Search)
                             local PageElMatches = {}
                             CollectElements(Page, Search, PageMatches, Filtering, PageElMatches)
                             if PageMatches or #PageElMatches > 0 then
@@ -15193,6 +15207,7 @@ function Library:CreateWindow(WindowInfo)
 
                     for Ei, ElEntry in SecEntry.Elements do
                         if MyGen ~= BuildGeneration then return end
+                        if Filtering and RowOrder >= MaxRows then break end
 
                         local RowDepth = 1 + (ElEntry.Depth or 1)
                         local IsLastInGroup = Ei == #SecEntry.Elements
@@ -15222,6 +15237,11 @@ function Library:CreateWindow(WindowInfo)
                             }, RowOrder))
                         end
                     end
+
+                    if RowOrder % 40 == 0 then
+                        task.wait()
+                        if MyGen ~= BuildGeneration then return end
+                    end
                 end
             end
         end
@@ -15245,9 +15265,18 @@ function Library:CreateWindow(WindowInfo)
             end
         end))
 
+        local OverlayRebuildQueued = false
         SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
             if SearchOverlay.Visible then
-                task.spawn(RebuildOverlay, SearchBox.Text)
+                --// Trailing-edge debounce: fast typing rebuilds once, after a pause \\--
+                if OverlayRebuildQueued then return end
+                OverlayRebuildQueued = true
+                task.delay(0.08, function()
+                    OverlayRebuildQueued = false
+                    if SearchOverlay.Visible then
+                        task.spawn(RebuildOverlay, SearchBox.Text)
+                    end
+                end)
             end
         end)
 
