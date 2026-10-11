@@ -2547,6 +2547,7 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         Stroke = Stroke,
         BackgroundTarget = TintBackground and BackgroundTarget or nil,
         Focused = false,
+        ZBoosted = false,
 
         RestColorKey = RestColorKey,
         AccentKey = AccentKey,
@@ -2560,6 +2561,43 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         FocusedThickness = FocusedThickness,
         BackgroundShift = BackgroundShift,
     }
+
+    --// Lifts the highlighted field above its siblings while focused so the
+    --// accent border is never covered by neighboring elements. \\--
+    function State:SetZBoost(Boosted: boolean)
+        if Boosted == self.ZBoosted then
+            return
+        end
+        self.ZBoosted = Boosted
+
+        local Targets = { self.Box }
+        if self.BackgroundTarget and self.BackgroundTarget ~= self.Box then
+            table.insert(Targets, self.BackgroundTarget)
+        end
+
+        for _, Target in Targets do
+            pcall(function()
+                if Boosted then
+                    local Top = Target.ZIndex
+                    local Parent = Target.Parent
+                    if Parent then
+                        for _, Sibling in Parent:GetChildren() do
+                            if Sibling:IsA("GuiObject") and Sibling.ZIndex > Top then
+                                Top = Sibling.ZIndex
+                            end
+                        end
+                    end
+                    Target:SetAttribute("AstralRestZIndex", Target.ZIndex)
+                    Target.ZIndex = Top + 1
+                else
+                    local RestZ = Target:GetAttribute("AstralRestZIndex")
+                    if typeof(RestZ) == "number" then
+                        Target.ZIndex = RestZ
+                    end
+                end
+            end)
+        end
+    end
 
     function State:ResolveRestColor()
         local Properties = Library.Registry[self.Stroke]
@@ -2604,6 +2642,7 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         end
 
         if Focused then
+            self:SetZBoost(true)
             TweenService:Create(self.Stroke, Library.TweenInfo, {
                 Color = self:ResolveAccentColor(),
                 Thickness = self.FocusedThickness,
@@ -2616,6 +2655,7 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 }):Play()
             end
         else
+            self:SetZBoost(false)
             TweenService:Create(self.Stroke, Library.TweenInfo, {
                 Color = self:ResolveRestColor(),
                 Thickness = self.RestThickness,
@@ -7767,7 +7807,7 @@ do
                 BackgroundTransparency = 1,
                 ClearTextOnFocus = false,
                 PlaceholderText = "Search...",
-                Size = UDim2.new(1, -24, 1, 0),
+                Size = UDim2.new(1, Info.Multi and -96 or -24, 1, 0),
                 Text = "",
                 TextSize = 13,
                 TextTruncate = Enum.TextTruncate.AtEnd,
@@ -7791,7 +7831,7 @@ do
                 --// All/Clear live inside the display button, right-aligned
                 --// ahead of the arrow. Opaque so long queries slide under. \\--
                 BtnRow = New("Frame", {
-                    BackgroundColor3 = "MainColor",
+                    BackgroundTransparency = 1,
                     BorderSizePixel = 0,
                     AnchorPoint = Vector2.new(1, 0.5),
                     Position = UDim2.new(1, -22, 0.5, 0),
