@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix1",
+    BuildId = "virt-fix2",
     BuildDate = "2026-10-11",
     SearchVirtualized = true,
 
@@ -14901,16 +14901,32 @@ function Library:CreateWindow(WindowInfo)
                     local AbsPos     = TargetInst.AbsolutePosition
                     local AbsSize    = TargetInst.AbsoluteSize
                     local MainAbsPos = MainFrame.AbsolutePosition
+                    local MainAbsSize = MainFrame.AbsoluteSize
                     local RelX       = ((AbsPos.X - MainAbsPos.X) - ExpandX) / MainScaleFactor
                     local RelY       = ((AbsPos.Y - MainAbsPos.Y) - ExpandY) / MainScaleFactor
                     local SizeX      = (AbsSize.X + ExpandX * 2) / MainScaleFactor
                     local SizeY      = (AbsSize.Y + ExpandY * 2) / MainScaleFactor
+
+                    --// Clamp to the window: tall elements and targets inside
+                    --// scrolling frames otherwise bleed outside MainFrame. \\--
+                    local MaxX = MainAbsSize.X / MainScaleFactor
+                    local MaxY = MainAbsSize.Y / MainScaleFactor
+                    local ClampX0 = math.max(RelX, 0)
+                    local ClampY0 = math.max(RelY, 0)
+                    local ClampX1 = math.min(RelX + SizeX, MaxX)
+                    local ClampY1 = math.min(RelY + SizeY, MaxY)
+                    if ClampX1 - ClampX0 < 4 or ClampY1 - ClampY0 < 4 then
+                        return
+                    end
+                    RelX, RelY = ClampX0, ClampY0
+                    SizeX, SizeY = ClampX1 - ClampX0, ClampY1 - ClampY0
 
                     local FlashOutline = New("Frame", {
                         BackgroundTransparency = 1,
                         BorderSizePixel = 0,
                         Position = UDim2.fromOffset(RelX, RelY),
                         Size = UDim2.fromOffset(SizeX, SizeY),
+                        ClipsDescendants = true,
 
                         ZIndex = Library.TooltipZIndex,
                         Parent = MainFrame,
@@ -15235,6 +15251,7 @@ function Library:CreateWindow(WindowInfo)
 
         local MaxDepthLines = 6
         local Overscan = 12
+        local LastRenderFirst, LastRenderLast, LastRenderTotal = nil, nil, nil
 
         local function BuildDisplayText(TextValue: string, Highlight: string?): string
             if Highlight and Highlight ~= "" then
@@ -15328,6 +15345,7 @@ function Library:CreateWindow(WindowInfo)
                 BadgeLabel = BadgeLabel,
                 Lbl = Lbl,
                 Data = nil,
+                Index = nil,
             }
 
             Btn.MouseEnter:Connect(function()
@@ -15351,6 +15369,7 @@ function Library:CreateWindow(WindowInfo)
 
         local function ConfigureRow(Handle, Cfg, Index: number)
             Handle.Data = Cfg
+            Handle.Index = Index
             local Btn, Lbl = Handle.Btn, Handle.Lbl
             local Depth: number = Cfg.Depth or 0
 
@@ -15412,7 +15431,7 @@ function Library:CreateWindow(WindowInfo)
             end
         end
 
-        local function RenderVisible()
+        local function RenderVisible(Force: boolean?)
             local Total = #RowData
             if Total == 0 or not SearchOverlay.Visible then
                 return
@@ -15430,6 +15449,13 @@ function Library:CreateWindow(WindowInfo)
                 Last = First
             end
 
+            --// Scroll ticks that don't move the window reuse rows as-is.
+            --// Re-assigning RichText every pixel is what made it jitter. \\--
+            if not Force and First == LastRenderFirst and Last == LastRenderLast and Total == LastRenderTotal then
+                return
+            end
+            LastRenderFirst, LastRenderLast, LastRenderTotal = First, Last, Total
+
             local Needed = Last - First + 1
             while #RowPool < Needed do
                 CreatePooledRow()
@@ -15443,19 +15469,32 @@ function Library:CreateWindow(WindowInfo)
                 if I <= Needed then
                     local DataIndex = First + I - 1
                     if DataIndex <= Total then
-                        ConfigureRow(Handle, RowData[DataIndex], DataIndex)
+                        if Handle.Index ~= DataIndex or Handle.Data ~= RowData[DataIndex] then
+                            ConfigureRow(Handle, RowData[DataIndex], DataIndex)
+                        else
+                            Handle.Btn.Visible = true
+                        end
                     else
                         Handle.Data = nil
+                        Handle.Index = nil
                         Handle.Btn.Visible = false
                     end
                 else
                     Handle.Data = nil
+                    Handle.Index = nil
                     Handle.Btn.Visible = false
                 end
             end
         end
 
         local RenderQueued = false
+        --// Scroll position changes render synchronously (same frame) so
+        --// rows track the thumb; size changes coalesce via defer. \\--
+        local function RenderOnScroll()
+            if SearchOverlay.Visible and #RowData > 0 then
+                RenderVisible(false)
+            end
+        end
         local function QueueRender()
             if RenderQueued then
                 return
@@ -15464,7 +15503,7 @@ function Library:CreateWindow(WindowInfo)
             task.defer(function()
                 RenderQueued = false
                 if SearchOverlay.Visible and #RowData > 0 then
-                    RenderVisible()
+                    RenderVisible(false)
                 end
             end)
         end
@@ -15482,13 +15521,15 @@ function Library:CreateWindow(WindowInfo)
             ScrollFrame.CanvasSize = UDim2.fromOffset(0, 0)
             ScrollFrame.CanvasPosition = Vector2.zero
         end
-        Library:GiveSignal(ScrollFrame:GetPropertyChangedSignal("CanvasPosition"):Connect(QueueRender))
+        Library:GiveSignal(ScrollFrame:GetPropertyChangedSignal("CanvasPosition"):Connect(RenderOnScroll))
         Library:GiveSignal(ScrollFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(QueueRender))
 
         local function ClearRows()
             table.clear(RowData)
+            LastRenderFirst, LastRenderLast, LastRenderTotal = nil, nil, nil
             for _, Handle in RowPool do
                 Handle.Data = nil
+                Handle.Index = nil
                 if Handle.Btn then
                     Handle.Btn.Visible = false
                 end
@@ -15741,7 +15782,7 @@ function Library:CreateWindow(WindowInfo)
             Library.LastSearchResultCount = #RowData
             ScrollFrame.CanvasSize = UDim2.fromOffset(0, #RowData * RowH + 6)
             ScrollFrame.CanvasPosition = Vector2.zero
-            RenderVisible()
+            RenderVisible(true)
             if not Filtering then
                 print(string.format("[Astral] search open (%s): %d rows, %d pooled", Library.BuildId, #RowData, #RowPool))
             end
