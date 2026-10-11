@@ -15012,15 +15012,34 @@ function Library:CreateWindow(WindowInfo)
             end
         end
 
+        --// Rebuild-scoped caches: fonts + accent hex are identical for every
+        --// row, so compute once per rebuild instead of per row. \\--
+        local RebuildTabFont, RebuildRowFont, RebuildAccentHex = nil, nil, nil
+        local RowHoverTween = TweenInfo.new(0.08)
+
         local function EscapeRichText(Value: string): string
-            return tostring(Value):gsub("[<>&]", { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;" })
+            local Str = tostring(Value)
+            if not Str:find("[<>&]", 1) then
+                return Str
+            end
+            return (Str:gsub("[<>&]", { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;" }))
         end
 
         --// Wraps the query's match in accent + bold. The query is spaceless
         --// (normalized), so match against spaceless text and map back. \\--
         local function HighlightMatch(Text: string, Query: string): string
-            local Stripped, Map = {}, {}
+            --// Fast path: plain substring (covers single-word queries, the
+            --// common case) without building the spaceless map. \\--
             local Lower = Text:lower()
+            local PlainS, PlainE = Lower:find(Query, 1, true)
+            if PlainS then
+                local HexFast = RebuildAccentHex or string.format("#%s", Library.Scheme.AccentColor:ToHex())
+                return EscapeRichText(Text:sub(1, PlainS - 1))
+                    .. string.format('<font color="%s"><b>%s</b></font>', HexFast, EscapeRichText(Text:sub(PlainS, PlainE)))
+                    .. EscapeRichText(Text:sub(PlainE + 1))
+            end
+
+            local Stripped, Map = {}, {}
             for i = 1, #Lower do
                 local Ch = Lower:sub(i, i)
                 if not Ch:match("%s") then
@@ -15035,7 +15054,7 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local OrigStart, OrigEnd = Map[S], Map[E]
-            local Hex = string.format("#%s", Library.Scheme.AccentColor:ToHex())
+            local Hex = RebuildAccentHex or string.format("#%s", Library.Scheme.AccentColor:ToHex())
 
             return EscapeRichText(Text:sub(1, OrigStart - 1))
                 .. string.format('<font color="%s"><b>%s</b></font>', Hex, EscapeRichText(Text:sub(OrigStart, OrigEnd)))
@@ -15144,10 +15163,16 @@ function Library:CreateWindow(WindowInfo)
 
             local LblFont
             if Cfg.IsTab then
-                LblFont = Font.fromEnum(Enum.Font.GothamBold)
-                LblFont = Font.new(LblFont.Family, Enum.FontWeight.Heavy, LblFont.Style)
+                LblFont = RebuildTabFont
+                if not LblFont then
+                    local Base = Font.fromEnum(Enum.Font.GothamBold)
+                    LblFont = Font.new(Base.Family, Enum.FontWeight.Heavy, Base.Style)
+                end
             else
-                LblFont = Font.fromEnum(Enum.Font.GothamMedium)
+                LblFont = RebuildRowFont
+                if not LblFont then
+                    LblFont = Font.fromEnum(Enum.Font.GothamMedium)
+                end
             end
             local LblTextSize = Cfg.IsTab and 13 or 12
 
@@ -15175,10 +15200,10 @@ function Library:CreateWindow(WindowInfo)
             })
 
             Btn.MouseEnter:Connect(function()
-                TweenService:Create(Btn, TweenInfo.new(0.08), { BackgroundTransparency = 0.82 }):Play()
+                TweenService:Create(Btn, RowHoverTween, { BackgroundTransparency = 0.82 }):Play()
             end)
             Btn.MouseLeave:Connect(function()
-                TweenService:Create(Btn, TweenInfo.new(0.08), { BackgroundTransparency = 1 }):Play()
+                TweenService:Create(Btn, RowHoverTween, { BackgroundTransparency = 1 }):Play()
             end)
 
             if Cfg.OnActivate then
@@ -15243,6 +15268,20 @@ function Library:CreateWindow(WindowInfo)
             ClearRows()
             ScrollFrame.CanvasPosition = Vector2.zero
 
+            --// Compute once per rebuild; every row reuses these. \\--
+            do
+                local Base = Font.fromEnum(Enum.Font.GothamBold)
+                RebuildTabFont = Font.new(Base.Family, Enum.FontWeight.Heavy, Base.Style)
+                RebuildRowFont = Font.fromEnum(Enum.Font.GothamMedium)
+                local Accent = Library.Scheme and Library.Scheme.AccentColor
+                if Accent then
+                    local Ok, Hex = pcall(function() return Accent:ToHex() end)
+                    RebuildAccentHex = (Ok and Hex) and ("#" .. Hex) or "#FFFFFF"
+                else
+                    RebuildAccentHex = "#FFFFFF"
+                end
+            end
+
             local Search    = NormalizeSearch(SearchText:lower():match("^%s*(.-)%s*$") or "")
             local Filtering = Search ~= ""
 
@@ -15280,7 +15319,9 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local RowOrder = 0
-            local MaxRows = 300
+            --// Unfiltered open used to build the ENTIRE library (no cap),
+            --// which is what froze the game. Cap both paths. \\--
+            local MaxRows = Filtering and 300 or 120
 
             for _, TabEntry in TabList do
                 if MyGen ~= BuildGeneration then return end
@@ -15343,9 +15384,15 @@ function Library:CreateWindow(WindowInfo)
                     Highlight  = Filtering and Search or nil,
                     OnActivate = function() NavigateTo(Tab, nil, nil) end,
                 }, RowOrder))
+                if RowOrder >= MaxRows then break end
+                if RowOrder % 20 == 0 then
+                    task.wait()
+                    if MyGen ~= BuildGeneration then return end
+                end
 
                 for Si, SecEntry in TabMatches do
                     if MyGen ~= BuildGeneration then return end
+                    if RowOrder >= MaxRows then break end
                     local IsLastSec = Si == #TabMatches
                     local Section   = SecEntry.Section
 
@@ -15359,10 +15406,15 @@ function Library:CreateWindow(WindowInfo)
                         IsLast       = IsLastSec and #SecEntry.Elements == 0,
                         OnActivate   = function() NavigateTo(Tab, Section, nil) end,
                     }, RowOrder))
+                    if RowOrder % 20 == 0 then
+                        task.wait()
+                        if MyGen ~= BuildGeneration then return end
+                    end
+                    if RowOrder >= MaxRows then break end
 
                     for Ei, ElEntry in SecEntry.Elements do
                         if MyGen ~= BuildGeneration then return end
-                        if Filtering and RowOrder >= MaxRows then break end
+                        if RowOrder >= MaxRows then break end
 
                         local RowDepth = 1 + (ElEntry.Depth or 1)
                         local IsLastInGroup = Ei == #SecEntry.Elements
@@ -15395,11 +15447,13 @@ function Library:CreateWindow(WindowInfo)
                         end
                     end
 
-                    if RowOrder % 40 == 0 then
+                    if RowOrder >= MaxRows then break end
+                    if RowOrder % 20 == 0 then
                         task.wait()
                         if MyGen ~= BuildGeneration then return end
                     end
                 end
+                if RowOrder >= MaxRows then break end
             end
         end
 
