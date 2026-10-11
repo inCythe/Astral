@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "149de7a-virt",
+    BuildId = "virt-fix1",
     BuildDate = "2026-10-11",
     SearchVirtualized = true,
 
@@ -15470,9 +15470,13 @@ function Library:CreateWindow(WindowInfo)
         end
 
         do
+            --// UIListLayout fights manual virtualized positioning, so remove
+            --// it (it has no Enabled property). Manual offsets + CanvasSize
+            --// fully own the layout from here. \\--
             local ListLayout = ScrollFrame:FindFirstChildOfClass("UIListLayout")
             if ListLayout then
-                ListLayout.Enabled = false
+                Library:RemoveFromRegistry(ListLayout)
+                ListLayout:Destroy()
             end
             ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.None
             ScrollFrame.CanvasSize = UDim2.fromOffset(0, 0)
