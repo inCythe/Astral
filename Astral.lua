@@ -7754,14 +7754,14 @@ do
         Library:RegisterIconInstance(ArrowImage, "chevron-up")
 
         local SearchBox
-        local ActionBar
+        local BtnRow
         --// Forward declaration: the All/Clear buttons below reference the row
         --// pool, which is only filled further down. Without this they would
         --// resolve Pool as a nil global and error on click. \\--
         local Pool = {}
         --// Search lives inside the dropdown button itself: opening the menu
         --// swaps the selection text for the search field, and All/Clear sit
-        --// in a minimal ghost-button row underneath. \\--
+        --// inline at the button's right edge, ahead of the arrow. \\--
         if Info.Searchable then
             SearchBox = New("TextBox", {
                 BackgroundTransparency = 1,
@@ -7788,30 +7788,34 @@ do
             end)
 
             if Info.Multi then
-                ActionBar = New("Frame", {
-                    BackgroundTransparency = 1,
-                    LayoutOrder = 2,
-                    Size = UDim2.new(1, 0, 0, 20),
+                --// All/Clear live inside the display button, right-aligned
+                --// ahead of the arrow. Opaque so long queries slide under. \\--
+                BtnRow = New("Frame", {
+                    BackgroundColor3 = "MainColor",
+                    BorderSizePixel = 0,
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -22, 0.5, 0),
+                    Size = UDim2.new(0, 0, 1, 0),
+                    AutomaticSize = Enum.AutomaticSize.X,
                     Visible = false,
-                    Parent = Holder,
+                    Parent = DisplayContainer,
                 })
                 New("UIListLayout", {
                     FillDirection = Enum.FillDirection.Horizontal,
                     HorizontalAlignment = Enum.HorizontalAlignment.Right,
                     VerticalAlignment = Enum.VerticalAlignment.Center,
-                    Padding = UDim.new(0, 10),
-                    Parent = ActionBar,
+                    Padding = UDim.new(0, 4),
+                    Parent = BtnRow,
                 })
 
-                local function MakeActionBtn(BtnText, Callback)
+                local function MakeActionBtn(BtnText, Width, Callback)
                     local Btn = New("TextButton", {
                         BackgroundTransparency = 1,
-                        Size = UDim2.new(0, 0, 1, 0),
-                        AutomaticSize = Enum.AutomaticSize.X,
+                        Size = UDim2.new(0, Width, 1, 0),
                         Text = BtnText,
-                        TextSize = 12,
+                        TextSize = 11,
                         TextTransparency = 0.5,
-                        Parent = ActionBar,
+                        Parent = BtnRow,
                     })
                     Btn.MouseEnter:Connect(function()
                         TweenService:Create(Btn, Library.TweenInfo, { TextTransparency = 0 }):Play()
@@ -7823,7 +7827,7 @@ do
                     return Btn
                 end
 
-                MakeActionBtn("All", function()
+                MakeActionBtn("All", 26, function()
                     local IsDictionary = not IsSequentialArray(Dropdown.Values)
                     for Key, RawValue in Dropdown.Values do
                         local Value = IsDictionary and Key or RawValue
@@ -7840,7 +7844,7 @@ do
                     Library:SafeCallback(Dropdown.Changed, Dropdown.Value)
                 end)
 
-                MakeActionBtn("Clear", function()
+                MakeActionBtn("Clear", 38, function()
                     table.clear(Dropdown.Value)
                     Dropdown:Display()
                     for _, Btn in Pool do Btn:UpdateButton() end
@@ -7943,8 +7947,8 @@ do
                     task.spawn(SearchBox.CaptureFocus, SearchBox)
                 end
             end
-            if ActionBar then
-                ActionBar.Visible = Active
+            if BtnRow then
+                BtnRow.Visible = Active
             end
             Dropdown:UpdateColors()
             Section:Resize()
