@@ -445,6 +445,7 @@ local Templates = {
         AutoShow = true,
         Center = true,
         Resizable = true,
+        AlwaysOnTop = false,
         SearchbarSize = UDim2.fromScale(1, 1),
         CornerRadius = 6,
         NotifySide = "Right",
@@ -470,6 +471,7 @@ local Templates = {
         SidebarWidth = nil,
         SidebarCompacted = false,
         CompactSidebarTooltips = true,
+        MinContainerWidth = 256,
 
         DiscordLink = nil,
         DiscordAction = "open",
@@ -506,6 +508,8 @@ local Templates = {
 
         ContentWidth = 450,
         SidebarWidth = 250,
+
+        AlwaysOnTop = false,
 
         DPIScale = nil,
     },
@@ -556,6 +560,8 @@ local Templates = {
 
         Disabled = false,
         Visible = true,
+
+        AllowRightClickInput = true,
     },
     ProgressBar = {
         Text = "Progress",
@@ -1614,6 +1620,22 @@ local function ParentUI(UI: Instance, SkipHiddenUI: boolean?)
     SafeParentUI(UI, gethui)
 end
 
+local function SetAlwaysOnTop(Gui: ScreenGui, Enabled: boolean)
+    if not Gui then
+        return
+    end
+
+    pcall(function()
+        if sethiddenproperty then
+            sethiddenproperty(Gui, "OnTopOfCoreBlur", Enabled)
+        elseif setscriptable then
+            setscriptable(Gui, "OnTopOfCoreBlur", true)
+            Gui.OnTopOfCoreBlur = Enabled
+            setscriptable(Gui, "OnTopOfCoreBlur", false)
+        end
+    end)
+end
+
 do
     local GuiParent = gethui()
     local ExistingGui = GuiParent:FindFirstChild("Astral")
@@ -2384,12 +2406,20 @@ function Library:RemoveAllOverlays(OverlayType: string?)
     end
 end
 
-function Library:AddDraggableLabel(Text: string)
+function Library:AddDraggableLabel(Text: string, Icon: string?, IconPosition: string?)
     local Table = {}
 
     local OwningScreenGui = ScreenGui
     local BaseZIndex = Library:NextOverlayZIndex()
 
+    if typeof(IconPosition) ~= "string" then
+        IconPosition = "left"
+    end
+
+    IconPosition = string.lower(IconPosition)
+    assert(IconPosition == "left" or IconPosition == "right", "Icon Position needs to be either 'left' or 'right'.")
+
+    local IconImage
     local Label = New("TextLabel", {
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = "BackgroundColor",
@@ -2407,7 +2437,7 @@ function Library:AddDraggableLabel(Text: string)
             Parent = Label,
         })
     )
-    New("UIPadding", {
+    local LabelPadding = New("UIPadding", {
         PaddingBottom = UDim.new(0, 6),
         PaddingLeft = UDim.new(0, 12),
         PaddingRight = UDim.new(0, 12),
@@ -2427,6 +2457,54 @@ function Library:AddDraggableLabel(Text: string)
         end
         Label.Text = Text
     end
+
+    function Table:SetIcon(NewIcon: string)
+        Icon = NewIcon
+
+        local IsNotEmpty = Icon and Trim(tostring(Icon)) ~= ""
+        if IsNotEmpty then
+            local CustomIcon = Library:GetCustomIcon(Icon)
+            assert(CustomIcon, "Icon must be a valid Roblox asset or a valid URL or a valid lucide icon.")
+
+            IconImage = IconImage or New("ImageLabel", {
+                BackgroundTransparency = 1,
+                ImageColor3 = "FontColor",
+                Size = UDim2.fromOffset(16, 16),
+                ZIndex = BaseZIndex + 1,
+                Parent = Label,
+            })
+
+            IconImage.Image = CustomIcon.Url
+            IconImage.ImageRectOffset = CustomIcon.ImageRectOffset
+            IconImage.ImageRectSize = CustomIcon.ImageRectSize
+        end
+
+        if IconImage then
+            IconImage.Visible = IsNotEmpty
+        end
+        Table:SetIconPosition(IconPosition)
+    end
+
+    function Table:SetIconPosition(NewPosition: string)
+        IconPosition = string.lower(NewPosition)
+        assert(IconPosition == "left" or IconPosition == "right", "Icon Position needs to be either 'left' or 'right'.")
+
+        local IsNotEmpty = Icon and Trim(tostring(Icon)) ~= ""
+        LabelPadding.PaddingLeft = UDim.new(0, (IsNotEmpty and IconPosition == "left") and 34 or 12)
+        LabelPadding.PaddingRight = UDim.new(0, (IsNotEmpty and IconPosition == "right") and 34 or 12)
+
+        if IconImage then
+            if IconPosition == "left" then
+                IconImage.AnchorPoint = Vector2.new(0, 0.5)
+                IconImage.Position = UDim2.new(0, -22, 0.5, 0)
+            else
+                IconImage.AnchorPoint = Vector2.new(1, 0.5)
+                IconImage.Position = UDim2.new(1, 22, 0.5, 0)
+            end
+        end
+    end
+
+    Table:SetIcon(Icon)
 
     function Table:SetVisible(Visible: boolean)
         if Label then
@@ -2507,6 +2585,97 @@ function Library:AddDraggableButton(Text: string, Func, ExcludeScaling: boolean?
     end
 
     Library:RegisterOverlay("DraggableButton", Text, Table)
+
+    return Table
+end
+
+function Library:AddDraggableImageButton(Icon, IconSize, Func, ExcludeScaling: boolean?)
+    local Table = {}
+
+    if typeof(IconSize) == "function" then
+        Func = IconSize
+        IconSize = 24
+    end
+    IconSize = tonumber(IconSize) or 24
+
+    local OwningScreenGui = ScreenGui
+    local BaseZIndex = Library:NextOverlayZIndex()
+
+    local Button = New("TextButton", {
+        BackgroundColor3 = "BackgroundColor",
+        Position = Library:GetNextOverlayPosition(),
+        Size = UDim2.fromOffset(IconSize + 12, IconSize + 12),
+        Text = "",
+        ZIndex = BaseZIndex,
+        Parent = OwningScreenGui,
+    })
+
+    local IconImage = New("ImageLabel", {
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(IconSize, IconSize),
+        ImageColor3 = "FontColor",
+        ZIndex = BaseZIndex + 1,
+        Parent = Button,
+    })
+
+    table.insert(
+        Library.Corners,
+        New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius),
+            Parent = Button,
+        })
+    )
+    if not ExcludeScaling then
+        Library:NewTrackedScale(Button)
+    end
+    Library:AddOutline(Button)
+
+    Button.MouseButton1Click:Connect(function()
+        Library:SafeCallback(Func, Table)
+    end)
+    Library:MakeDraggable(Button, Button, true)
+
+    Table.Button = Button
+
+    function Table:SetIcon(NewIcon: string)
+        Icon = NewIcon or Icon
+
+        local CustomIcon = Library:GetCustomIcon(Icon)
+        assert(CustomIcon, "Icon must be a valid Roblox asset or a valid URL or a valid lucide icon.")
+
+        IconImage.Image = CustomIcon.Url
+        IconImage.ImageRectOffset = CustomIcon.ImageRectOffset
+        IconImage.ImageRectSize = CustomIcon.ImageRectSize
+    end
+
+    function Table:SetIconSize(NewSize: number)
+        IconSize = NewSize
+        IconImage.Size = UDim2.fromOffset(IconSize, IconSize)
+        Button.Size = UDim2.fromOffset(IconSize + 12, IconSize + 12)
+    end
+
+    Table:SetIcon(Icon)
+
+    function Table:SetVisible(Visible: boolean)
+        if not Button.Parent then
+            return
+        end
+        Button.Visible = Visible
+    end
+
+    function Table:IsVisible(): boolean
+        return Button ~= nil and Button.Visible
+    end
+
+    function Table:Remove()
+        if Button then
+            Button.Visible = false
+        end
+    end
+
+    Library:RegisterOverlay("DraggableImageButton", Icon, Table)
 
     return Table
 end
@@ -5932,6 +6101,30 @@ do
             Parent = DisplayLabel,
         })
 
+        local InputTextBox
+        local InputTextBoxStroke
+        if Info.AllowRightClickInput then
+            InputTextBox = New("TextBox", {
+                BackgroundTransparency = 1,
+                Size = UDim2.fromScale(1, 1),
+                Text = "",
+                TextSize = 14,
+                ZIndex = Bar.ZIndex + 3,
+                Visible = false,
+                ClearTextOnFocus = false,
+                Parent = Bar,
+            })
+            InputTextBoxStroke = New("UIStroke", {
+                ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,
+                Color = "DarkColor",
+                LineJoinMode = Enum.LineJoinMode.Miter,
+                Parent = InputTextBox,
+            })
+            Library:AddFocusHighlight(InputTextBox, InputTextBoxStroke, {
+                Background = false,
+            })
+        end
+
         local Fill = New("Frame", {
             BackgroundColor3 = "AccentColor",
             Size = UDim2.fromScale(0.5, 1),
@@ -6009,6 +6202,10 @@ do
                 SliderLabel.TextTransparency = Slider.Disabled and 0.8 or 0
             end
             DisplayLabel.TextTransparency = Slider.Disabled and 0.8 or 0
+
+            if Info.AllowRightClickInput then
+                InputTextBox.TextTransparency = Slider.Disabled and 0.8 or 0
+            end
 
             if EditButton then
                 EditButton.ImageTransparency = Slider.Disabled and 0.8 or 0.4
@@ -6145,9 +6342,104 @@ do
             Slider:Display()
         end
 
+        if Info.AllowRightClickInput then
+            local LastValidText = ""
+            InputTextBox:GetPropertyChangedSignal("Text"):Connect(function()
+                local Text = InputTextBox.Text
+                local AsNum = tonumber(Text)
+
+                if #tostring(Text) > 0 and not AsNum and Text ~= "-" then
+                    InputTextBox.Text = LastValidText
+                else
+                    if Slider.Rounding == 0 and Text:find("%.") then
+                        InputTextBox.Text = LastValidText
+                        return
+                    end
+
+                    local DecimalPos = Text:find("%.")
+                    if DecimalPos and Slider.Rounding > 0 then
+                        local Decimals = #Text - DecimalPos
+                        if Decimals > Slider.Rounding then
+                            InputTextBox.Text = LastValidText
+                            return
+                        end
+                    end
+
+                    LastValidText = Text
+
+                    if AsNum then
+                        if AsNum > Slider.Max then
+                            InputTextBox.Text = tostring(Slider.Max)
+                        elseif AsNum < Slider.Min then
+                            InputTextBox.Text = tostring(Slider.Min)
+                        end
+                    end
+                end
+            end)
+
+            InputTextBox.FocusLost:Connect(function()
+                InputTextBox.Visible = false
+                DisplayLabel.Visible = true
+
+                local Num = tonumber(InputTextBox.Text)
+                if not Num then
+                    return
+                end
+
+                Num = Round(Num, Slider.Rounding)
+                Slider:SetValue(Num)
+            end)
+
+            InputTextBox.Focused:Connect(function()
+                if Slider.Disabled then
+                    return
+                end
+
+                Library.Registry[InputTextBoxStroke].Color = "AccentColor"
+                TweenService:Create(InputTextBoxStroke, Library.TweenInfo, {
+                    Color = Library.Scheme.AccentColor,
+                }):Play()
+            end)
+
+            InputTextBox.FocusLost:Connect(function()
+                if Slider.Disabled then
+                    return
+                end
+
+                Library.Registry[InputTextBoxStroke].Color = "DarkColor"
+                TweenService:Create(InputTextBoxStroke, Library.TweenInfo, {
+                    Color = Library.Scheme.DarkColor,
+                }):Play()
+            end)
+        end
+
+        local LastTap = 0
         Bar.InputBegan:Connect(function(Input: InputObject)
-            if not IsClickInput(Input) or Slider.Disabled then
+            local ValidInput = IsClickInput(Input) or Input.UserInputType == Enum.UserInputType.MouseButton2
+            if not ValidInput or Slider.Disabled then
                 return
+            end
+
+            if Info.AllowRightClickInput then
+                local IsRightClick = Input.UserInputType == Enum.UserInputType.MouseButton2
+                local IsDoubleTap = false
+
+                if Library.IsMobile and Input.UserInputType == Enum.UserInputType.Touch then
+                    if tick() - LastTap < 0.3 then
+                        IsDoubleTap = true
+                    end
+
+                    LastTap = tick()
+                end
+
+                if IsRightClick or IsDoubleTap then
+                    InputTextBox.Text = tostring(Slider.Value)
+                    InputTextBox.Visible = true
+                    DisplayLabel.Visible = false
+
+                    task.spawn(InputTextBox.CaptureFocus, InputTextBox)
+                    return
+                end
             end
 
             if Library.ActiveTab then
@@ -7626,10 +7918,18 @@ do
             BorderColor3 = "OutlineColor",
             BorderSizePixel = 1,
             BackgroundTransparency = Image.BackgroundTransparency,
+            ClipsDescendants = true,
             Position = UDim2.fromScale(0, 1),
             Size = UDim2.fromScale(1, 1),
             Parent = Holder,
         })
+        table.insert(
+            Library.Corners,
+            New("UICorner", {
+                CornerRadius = UDim.new(0, Library.CornerRadius / 2),
+                Parent = Box,
+            })
+        )
 
         New("UIPadding", {
             PaddingBottom = UDim.new(0, 4),
@@ -8482,7 +8782,9 @@ function Library:Notify(...)
 
     if typeof(Info) == "table" then
         Data.Title = Info.Title ~= nil and tostring(Info.Title) or nil
+        Data.TitleColor = Info.TitleColor
         Data.Description = Info.Description ~= nil and tostring(Info.Description) or nil
+        Data.DescriptionColor = Info.DescriptionColor
         Data.Time = Info.Time or 5
         Data.SoundId = Info.SoundId
         Data.Steps = Info.Steps
@@ -8490,10 +8792,12 @@ function Library:Notify(...)
         Data.Icon = Info.Icon
         Data.BigIcon = Info.BigIcon
         Data.IconColor = Info.IconColor
+        Data.Volume = tonumber(Info.Volume) or 3
     else
         Data.Description = tostring(Info)
         Data.Time = select(2, ...) or 5
         Data.SoundId = select(3, ...)
+        Data.Volume = select(4, ...) or 3
     end
     Data.Destroyed = false
 
@@ -8634,6 +8938,7 @@ function Library:Notify(...)
             Position = UDim2.new(0, (Data.Icon and 21 or 0), 0.5, 0),
             Size = UDim2.fromScale(0, 0),
             Text = Data.Title,
+            TextColor3 = Data.TitleColor or "FontColor",
             TextSize = 15,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Center,
@@ -8648,6 +8953,7 @@ function Library:Notify(...)
             BackgroundTransparency = 1,
             Size = UDim2.fromScale(0, 0),
             Text = Data.Description,
+            TextColor3 = Data.DescriptionColor or "FontColor",
             TextSize = 14,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextWrapped = true,
@@ -8759,7 +9065,7 @@ function Library:Notify(...)
         pcall(function()
             local Sound = New("Sound", {
                 SoundId = SoundId,
-                Volume = 3,
+                Volume = tonumber(Data.Volume) or 3,
                 PlayOnRemove = true,
                 Parent = SoundService,
             })
@@ -8843,7 +9149,17 @@ function Library:CreateWindow(WindowInfo)
         until ViewportSize.X > 5 and ViewportSize.Y > 5
     end
 
-    Library.MinSize = Library.OriginalMinSize
+    local MaxX = ViewportSize.X - 64
+    local MaxY = ViewportSize.Y - 64
+
+    Library.OriginalMinSize =
+        Vector2.new(math.min(Library.OriginalMinSize.X, MaxX), math.min(Library.OriginalMinSize.Y, MaxY))
+    Library.MinSize = Vector2.new(math.min(WindowInfo.MinContainerWidth, MaxX), Library.OriginalMinSize.Y)
+
+    WindowInfo.Size = UDim2.fromOffset(
+        math.clamp(WindowInfo.Size.X.Offset, Library.MinSize.X, MaxX),
+        math.clamp(WindowInfo.Size.Y.Offset, Library.MinSize.Y, MaxY)
+    )
 
     local BaseWindowSize = Vector2.new(WindowInfo.Size.X.Offset, WindowInfo.Size.Y.Offset)
     Library.BaseWindowSize = BaseWindowSize
@@ -9293,7 +9609,7 @@ function Library:CreateWindow(WindowInfo)
                 return Library:GetBetterColor(Library.Scheme.BackgroundColor, 4)
             end,
             Position = UDim2.fromScale(0, 1),
-            Size = UDim2.new(1, 0, 0, 20 + WindowInfo.CornerRadius),
+            Size = UDim2.new(1, 0, 0, math.max(20, WindowInfo.CornerRadius * 2)),
             Parent = MainFrame
         })
         Library:MakeLine(MainFrame, {
@@ -9599,7 +9915,59 @@ function Library:CreateWindow(WindowInfo)
         function Window:SetBackgroundImage(Image: string)
             assert(typeof(Image) == "string", "Expected string for Image got: " .. typeof(Image))
 
-            BackgroundImage.Image = Image
+            local ValidImage = false
+
+            if typeof(Image) == "string" then
+                local BackgroundIcon = Library:GetCustomIcon(Image)
+
+                if BackgroundIcon then
+                    ValidImage = true
+
+                    BackgroundImage.Image = BackgroundIcon.Url
+                    BackgroundImage.ImageRectOffset = BackgroundIcon.ImageRectOffset
+                    BackgroundImage.ImageRectSize = BackgroundIcon.ImageRectSize
+                elseif Image:match("http://") or Image:match("https://") then
+                    local RawFileName = Image:match("(.+)%..+$")
+                    local _, Domain = Image:match("^(https?://)([^/]+)");
+
+                    if RawFileName and Domain then
+                        local Extention = string.sub(Image, #RawFileName + 1, #Image)
+                        local FileNamePos = RawFileName:gsub("\\", "/"):find("/[^/]*$")
+                        local FileName = FileNamePos and Image:sub(FileNamePos + 1) or nil
+
+                        if FileName then
+                            ValidImage = true
+
+                            local AssetName = Domain .. FileName
+                            if #AssetName > 255 then
+                                local NewLength = 255 - #Domain - #Extention
+                                if NewLength < 0 then
+                                    AssetName = Domain .. Extention
+                                else
+                                    AssetName = Domain .. string.sub(FileName:sub(1, #FileName - #Extention), 1, NewLength) .. Extention
+                                end
+                            end
+
+                            if CustomImageManagerAssets[FileName] == nil then
+                                CustomImageManager.AddAsset(FileName, 0, Image)
+                            else
+                                CustomImageManager.DownloadAsset(FileName, true)
+                            end
+
+                            BackgroundImage.Image = CustomImageManager.GetAsset(FileName)
+                            BackgroundImage.ImageRectOffset = Vector2.zero
+                            BackgroundImage.ImageRectSize = Vector2.zero
+                        end
+                    end
+                end
+            end
+
+            if not ValidImage then
+                BackgroundImage.Image = ""
+                BackgroundImage.ImageRectOffset = Vector2.zero
+                BackgroundImage.ImageRectSize = Vector2.zero
+            end
+
             WindowInfo.BackgroundImage = Image
         end
     end
@@ -9609,6 +9977,11 @@ function Library:CreateWindow(WindowInfo)
 
         FooterLabel.Text = footer
         WindowInfo.Footer = footer
+    end
+
+    function Window:SetAlwaysOnTop(Enabled: boolean)
+        WindowInfo.AlwaysOnTop = Enabled == true
+        SetAlwaysOnTop(Library.ScreenGui, WindowInfo.AlwaysOnTop)
     end
 
     function Window:SetCornerRadius(Radius: number)
@@ -9627,7 +10000,7 @@ function Library:CreateWindow(WindowInfo)
         WindowInfo.CornerRadius = Radius
 
         ResizeButton.Position = UDim2.new(1, -Radius / 4, 0, 0)
-        BottomBackground.Size = UDim2.new(1, 0, 0, 20 + Radius)
+        BottomBackground.Size = UDim2.new(1, 0, 0, math.max(20, Radius * 2))
 
         for _, Tab in Library.Tabs do
             if Tab.IsKeyTab then
@@ -9741,7 +10114,7 @@ function Library:CreateWindow(WindowInfo)
     local SidebarGrabberRef = nil
 
     function Window:SetSidebarWidth(Width)
-        Width = math.clamp(Width, CompactWidth, MainFrame.Size.X.Offset - 256 - 1)
+        Width = math.clamp(Width, CompactWidth, MainFrame.Size.X.Offset - WindowInfo.MinContainerWidth - 1)
 
         DividerLine.Position = UDim2.fromOffset(Width, 0)
 
@@ -9990,6 +10363,8 @@ function Library:CreateWindow(WindowInfo)
     function Window:AddTab(InfoOrName, IconOrTabParent, Description, TabParent)
         local Name = nil
         local Icon = nil
+        local Tooltip = nil
+        local Order = nil
 
         if select("#", InfoOrName) == 0 then
 
@@ -9999,6 +10374,8 @@ function Library:CreateWindow(WindowInfo)
             Name = Info.Name or "Tab"
             Icon = Info.Icon
             Description = Info.Description
+            Tooltip = Info.Tooltip
+            Order = Info.Order
 
             if typeof(IconOrTabParent) == "Instance" then
                 TabParent = IconOrTabParent
@@ -10010,6 +10387,10 @@ function Library:CreateWindow(WindowInfo)
             else
                 Icon = IconOrTabParent
             end
+        end
+
+        if not tonumber(Order) then
+            Order = #Tabs:GetChildren()
         end
 
         local TabButton: TextButton
@@ -10032,6 +10413,7 @@ function Library:CreateWindow(WindowInfo)
                 BackgroundTransparency = 1,
                 Size = UDim2.new(1, 0, 0, 36),
                 Text = "",
+                LayoutOrder = Order,
                 Parent = TabParent or Tabs,
             })
             local ButtonPadding = New("UIPadding", {
@@ -10306,6 +10688,9 @@ function Library:CreateWindow(WindowInfo)
             SectionGroups = {},
             ConditionalSections = {},
             Description = Description,
+            Tooltip = Tooltip,
+            TooltipTable = nil,
+            Order = Order,
             Sides = {
                 TabScroll,
             },
@@ -11272,6 +11657,28 @@ function Library:CreateWindow(WindowInfo)
             end
         end
 
+        function Tab:SetOrder(NewOrder: number)
+            Order = NewOrder
+            TabButton.LayoutOrder = Order
+        end
+
+        function Tab:SetTooltip(Text: string?)
+            Tab.Tooltip = Text
+
+            if Tab.TooltipTable then
+                Tab.TooltipTable:Destroy()
+                Tab.TooltipTable = nil
+            end
+
+            if typeof(Text) == "string" then
+                Tab.TooltipTable = Library:AddTooltip(Text, nil, TabButton)
+            end
+        end
+
+        if typeof(Tooltip) == "string" then
+            Tab.TooltipTable = Library:AddTooltip(Tooltip, nil, TabButton)
+        end
+
         if not Library.ActiveTab then
             Tab:Show()
         end
@@ -11320,7 +11727,24 @@ function Library:CreateWindow(WindowInfo)
                 BackgroundTransparency = 1,
                 Size = UDim2.new(1, 0, 0, 40),
                 Text = "",
+                LayoutOrder = Tab.Order,
                 Parent = Tabs,
+            })
+            local ButtonPadding = New("UIPadding", {
+                PaddingBottom = UDim.new(0, 4),
+                PaddingLeft = UDim.new(0, IsCompact and 4 or 20),
+                PaddingRight = UDim.new(0, 4),
+                PaddingTop = UDim.new(0, 4),
+                Parent = TabButton,
+            })
+
+            local IconSlot = New("Frame", {
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundTransparency = 1,
+                Position = UDim2.new(0, 0, 0.5, 0),
+                Size = UDim2.new(0, 20, 1, 0),
+                SizeConstraint = Enum.SizeConstraint.RelativeYY,
+                Parent = TabButton,
             })
             local ButtonPadding = New("UIPadding", {
                 PaddingBottom = UDim.new(0, 4),
@@ -11421,6 +11845,9 @@ function Library:CreateWindow(WindowInfo)
         local Tab = {
             Elements = {},
             Description = Description,
+            Tooltip = nil,
+            TooltipTable = nil,
+            Order = #Tabs:GetChildren(),
             IsKeyTab = true,
         }
 
@@ -11569,6 +11996,24 @@ function Library:CreateWindow(WindowInfo)
 
             if not Visible and Library.ActiveTab == Tab then
                 Tab:Hide()
+            end
+        end
+
+        function Tab:SetOrder(NewOrder: number)
+            Tab.Order = NewOrder
+            TabButton.LayoutOrder = Tab.Order
+        end
+
+        function Tab:SetTooltip(Text: string?)
+            Tab.Tooltip = Text
+
+            if Tab.TooltipTable then
+                Tab.TooltipTable:Destroy()
+                Tab.TooltipTable = nil
+            end
+
+            if typeof(Text) == "string" then
+                Tab.TooltipTable = Library:AddTooltip(Text, nil, TabButton)
             end
         end
 
@@ -12474,6 +12919,8 @@ function Library:CreateWindow(WindowInfo)
         task.spawn(Library.Toggle)
     end
 
+    Window:SetAlwaysOnTop(WindowInfo.AlwaysOnTop)
+
     if not WindowInfo.AutoShow and not Library.DeferAutoShowTo
         and Library.BubbleWantedOnStart and not Library.Bubble and Library.ToggleBubble then
         task.spawn(function()
@@ -13181,6 +13628,7 @@ function Library:CreateLoading(LoadingInfo)
         AutoResizeHeight = LoadingInfo.AutoResizeHeight,
         IsError = false,
         Destroyed = false,
+        AlwaysOnTop = LoadingInfo.AlwaysOnTop,
 
         WindowWidth = LoadingInfo.WindowWidth,
         WindowHeight = LoadingInfo.WindowHeight,
@@ -13199,6 +13647,7 @@ function Library:CreateLoading(LoadingInfo)
     })
     ParentUI(ScreenGui)
     Loading.ScreenGui = ScreenGui
+    SetAlwaysOnTop(ScreenGui, LoadingInfo.AlwaysOnTop)
 
     ScreenGui.DescendantRemoving:Connect(function(Inst)
         Library:RemoveFromRegistry(Inst)
@@ -13682,6 +14131,11 @@ function Library:CreateLoading(LoadingInfo)
     function Loading:SetSidebarWidth(Width)
         Loading.SidebarWidth = Width
         Loading:UpdateLayout()
+    end
+
+    function Loading:SetAlwaysOnTop(Enabled: boolean)
+        Loading.AlwaysOnTop = Enabled == true
+        SetAlwaysOnTop(Loading.ScreenGui, Loading.AlwaysOnTop)
     end
 
     function Loading:ShowSidebarPage(Bool)
