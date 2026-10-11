@@ -151,6 +151,13 @@ The root `Library` table contains global state and utility methods.
 | `Library.ShowToggleFrameInKeybinds` | boolean | `true` | Show the toggle checkbox in the keybind list |
 | `Library.HighlightSearchResults` | boolean | `true` | Wrap the matching substring of search results in a colored highlight |
 | `Library.WaitForIconsOnLoad` | boolean | `true` | Wait for icons to load before creating windows/loading screens |
+| `Library.Animations` | table | all `false` | `ToggleWindow` (window fade) and `TabSwitch` (swipe transition) animations; see `Window:SetAnimations` |
+| `Library.TabTransitionInfo` | TweenInfo | `0.22s Quad Out` | Timing for the tab-switch swipe |
+| `Library.TabSwipeOffset` | number | `26` | Swipe distance in pixels for tab transitions |
+| `Library.TabSwipeFrom` | string | `"bottom"` | Swipe direction (`"left"`/`"right"`/`"top"`/`"bottom"`/`"auto"`) |
+| `Library.IsPicking` | boolean | `false` | Whether any KeyPicker is currently capturing a bind |
+| `Library.Window` | Window? | `nil` | The window created by `CreateWindow` |
+| `Library.KeybindMenu` | table? | `nil` | The keybind menu object (collapse + visibility settings) |
 | `Library.Scheme` | table | -- | The active color scheme |
 | `Library.Toggles` | table | -- | All registered toggles, keyed by their `Idx` |
 | `Library.Options` | table | -- | All registered options (inputs, sliders, dropdowns, etc.) keyed by `Idx` |
@@ -172,6 +179,7 @@ local Window = Library:CreateWindow({
     Center       = true,
     AutoShow     = true,
     Resizable    = true,
+    AlwaysOnTop  = false,
     CornerRadius = 6,
     Font         = Enum.Font.GothamMedium,
     TitleSize    = 20,
@@ -186,6 +194,7 @@ local Window = Library:CreateWindow({
     SidebarCompacted = false,
     CompactSidebarTooltips = true,
     SidebarWidth = nil,
+    MinContainerWidth = 256,
     EnableSidebarResize = true,
     Bubble = nil,
     BubbleSide = "Right",
@@ -200,6 +209,19 @@ local Window = Library:CreateWindow({
     DiscordAction = "open",
     SingleInstance = true,
     WaitForIconsOnLoad = nil,
+    Snapping = false,
+    SnapDistance = 28,
+    SnapMargin = 8,
+    SnapAvoidCoreGui = true,
+    Animations = {
+        ToggleWindow = false,
+        TabSwitch = false,
+        Dropdown = false,
+        KeyPicker = false,
+    },
+    TabTransitionTime = 0.22,
+    TabSwipeOffset = 26,
+    TabSwipeFrom = "bottom",
 })
 ```
 
@@ -231,6 +253,8 @@ Type
 
 `Resizable?`boolean
 
+`AlwaysOnTop?`boolean
+
 `CornerRadius?`number
 
 `DPIScale?`number
@@ -254,6 +278,9 @@ Window:ChangeTitle(title: string)
 Window:SetTitleSize(size: number)
 Window:SetFooter(footer: string)
 Window:SetCornerRadius(Radius: number)
+Window:SetAlwaysOnTop(Enabled: boolean)
+Window:SetSnapping(Enabled: boolean, Distance: number?, Margin: number?, AvoidCoreGui: boolean?)
+Window:SetAnimations(Animations: { [string]: boolean }?, TabTransitionTime: number?, TabSwipeOffset: number?, TabSwipeFrom: string?)
 
 Window:GetSidebarWidth(): number
 Window:SetSidebarWidth(Width: number)
@@ -265,6 +292,8 @@ Window:HideTabInfo()
 
 Window:SetBackgroundImage(Image: string)
 ```
+
+`MinContainerWidth` (default `256`) is the minimum width the content area keeps when the sidebar is resized or the window is shrunk to a small viewport. `SetBackgroundImage` accepts custom icons and `http(s)` URLs (downloaded and cached), and works even when no image was set at creation. `SetSnapping` magnets the window to screen edges/center while dragging (with accent guide lines); `SetAnimations` toggles the window fade and tab-switch swipe at runtime.
 
 #### Toggle Bubble
 
@@ -300,6 +329,8 @@ local Tab = Window:AddTab({
     Name        = "Main",
     Icon        = "home",
     Description = "Main tab",
+    Tooltip     = nil,
+    Order       = nil,
 })
 
 -- Shorthand (name only, no icon):
@@ -309,7 +340,7 @@ local Tab = Window:AddTab("Main")
 local Tab = Window:AddTab("Main", "home")
 ```
 
-Tabs appear in the left sidebar. The first added tab is shown automatically. Only one tab is active at a time.
+Tabs appear in the left sidebar. The first added tab is shown automatically. Only one tab is active at a time. `Order` controls sidebar position (defaults to creation order); `Tooltip` shows a hover tooltip on the tab button.
 
 | Arg Idx | Argument Description | Type | Default |
 | --- | --- | --- | --- |
@@ -322,6 +353,8 @@ Tabs appear in the left sidebar. The first added tab is shown automatically. Onl
 Tab:Show()
 Tab:Hide()
 Tab:SetVisible(Visible: boolean)
+Tab:SetOrder(NewOrder: number)
+Tab:SetTooltip(Text: string?)
 ```
 
 ---
@@ -463,6 +496,8 @@ This produces exactly what it reads as: **section -> two-column -> section -> tw
 Within a two-column row, left sections (`Side = 1`) stack top-to-bottom in the left column, and right sections (`Side = 2`) stack top-to-bottom in the right column, independent of each other.
 
 The global searchbar/overlay lists matching sections and elements in this same visual order, so results always read top-to-bottom, left-to-right just like the tab itself.
+
+Search uses fuzzy matching (so `enb` finds "Enable Feature"), covers element text, tooltips, and dropdown value lists, and scores every tab -- the view switches to the tab with the best match (staying put on ties). Matching a tab, section, or page name reveals everything inside it.
 
 ---
 
@@ -666,6 +701,7 @@ local Button = Section:AddButton({
     Text         = "Do Thing",
     Func         = function() end,
     DoubleClick  = false,
+    Icon         = nil,
     Risky        = false,
     Disabled     = false,
     Visible      = true,
@@ -678,6 +714,8 @@ local Button = Section:AddButton({
 Section:AddButton("Label", function() end)
 ```
 
+`Icon` accepts any custom-icon format (asset id, URL, lucide name) and renders centered next to the label.
+
 Prop
 
 Type
@@ -687,6 +725,8 @@ Type
 `Func?`function
 
 `DoubleClick?`boolean
+
+`Icon?`string
 
 `Risky?`boolean
 
@@ -704,6 +744,7 @@ Type
 
 ```lua
 Button:SetText(Text: string)
+Button:SetIcon(Icon: string?)
 Button:SetDisabled(Disabled: boolean)
 Button:SetVisible(Visible: boolean)
 ```
@@ -790,6 +831,7 @@ Toggle:SetText(Text: string)
 Toggle:SetDisabled(Disabled: boolean)
 Toggle:SetVisible(Visible: boolean)
 Toggle:OnChanged(Func: (Value: boolean) -> ())
+Toggle:RunChanged()
 ```
 
 | Arg Idx | Argument Description | Type | Default |
@@ -866,6 +908,7 @@ local Slider = Section:AddSlider("mySlider", {
     HideMax  = false,
     Editable = false,
     EditableStyle = "Pencil", -- "Pencil" or "ValueBox"
+    AllowRightClickInput = true,
     Callback = function(Value) end,
     Changed  = function(Value) end,
     Disabled = false,
@@ -894,7 +937,11 @@ Type
 
 `EditableStyle?`"Pencil" \| "ValueBox"
 
+`AllowRightClickInput?`boolean
+
 ---
+
+Right-clicking the bar (or double-tapping it on mobile) opens a text field to type an exact value.
 
 #### Methods
 
@@ -908,6 +955,7 @@ Slider:SetSuffix(Suffix: string)
 Slider:SetDisabled(Disabled: boolean)
 Slider:SetVisible(Visible: boolean)
 Slider:OnChanged(Func: (Value: number) -> ())
+Slider:RunChanged()
 ```
 
 | Arg Idx | Argument Description | Type | Default |
@@ -1019,6 +1067,7 @@ Input:SetText(Text: string)
 Input:SetDisabled(Disabled: boolean)
 Input:SetVisible(Visible: boolean)
 Input:OnChanged(Func: (Value: string) -> ())
+Input:RunChanged()
 ```
 
 | Arg Idx | Argument Description | Type | Default |
@@ -1050,6 +1099,8 @@ local Dropdown = Section:AddDropdown("myDropdown", {
     AllowNull      = false,
     Searchable     = false,
     MaxVisibleDropdownItems = 8,
+    KeepDisabledValuePosition = false,
+    DragSelect     = false,
     FormatDisplayValue = nil,
     FormatListValue    = nil,
 
@@ -1072,7 +1123,7 @@ Type
 
 `Text?`string
 
-`Values`{ string }
+`Values`{ string } \| { [any]: string }
 
 `Multi?`boolean
 
@@ -1080,9 +1131,15 @@ Type
 
 `Searchable?`boolean
 
+`DragSelect?`boolean
+
+`KeepDisabledValuePosition?`boolean
+
 `SpecialType?`"Player" \| "Team"
 
 ---
+
+Large lists are virtualized (only visible rows exist), so 10,000+ values open without freezing. `Searchable` lists use fuzzy matching sorted by best match. `Values` also accepts a dictionary `{ Key = "Display Label" }` — the key is the stored identity, the value is what renders; `DisabledValues` and `ValueImages` accept either keys or labels. `DragSelect` (multi, non-mobile) paints a selection by dragging across rows.
 
 #### Methods
 
@@ -1098,19 +1155,21 @@ Dropdown:AddDisabledValues(Values: table | string)
 Dropdown:SetValueImages(Images: table)
 Dropdown:AddValueImages(Images: table)
 Dropdown:SetText(Text: string?)
+Dropdown:SetDragSelect(Value: boolean)
 Dropdown:SetDisabled(Disabled: boolean)
 Dropdown:SetVisible(Visible: boolean)
 Dropdown:OnChanged(Func: (Value) -> ())
-Dropdown:GetActiveValues(): table | number
+Dropdown:RunChanged()
+Dropdown:GetActiveValues(ReturnCount: boolean?): table | number
 ```
 
 | Arg Idx | Argument Description | Type | Default |
 | --- | --- | --- | --- |
 | 1 | Value / values / callback | any | nil |
 
-For `Multi = true`, `Dropdown.Value` is a dictionary `{ [Value] = true }`. For single, it is the raw selected value or `nil`.
+For `Multi = true`, `Dropdown.Value` is a dictionary `{ [Value] = true }`. For single, it is the raw selected value or `nil`. `GetActiveValues(true)` returns the selection count (useful for the "at least one" `AllowNull` guard).
 
-`SetValues` automatically deselects any values that are no longer in the updated list. For single-select dropdowns without `AllowNull`, it will select the first available value if the current selection is removed.
+`SetValues` prunes selections that are no longer in the updated list and only fires callbacks when something actually changed.
 
 Registered in `Library.Options[Idx]`.
 
@@ -1176,6 +1235,7 @@ KeyPicker:SetValue({ Key = "F", Mode = "Toggle", Modifiers = { "LShift" } })
 -- Positional form also accepted: KeyPicker:SetValue({ Key, Mode, Modifiers })
 KeyPicker:GetState(): boolean
 KeyPicker:SetText(Text: string)
+KeyPicker:SetMenuVisibility(Visible: boolean)
 KeyPicker:OnChanged(Func)
 KeyPicker:OnClick(Func)
 ```
@@ -1184,7 +1244,9 @@ KeyPicker:OnClick(Func)
 | --- | --- | --- | --- |
 | 1 | Key config / text / callback | table \| string \| function | nil |
 
-Left-click the key button to enter picking mode (shows `...`). Press the desired key or combo. Right-click to open the mode selector menu. The keybind also appears in the floating [Keybinds Panel](#keybind-menu).
+Left-click the key button to enter picking mode (shows `...`). Press the desired key or combo. Right-click to open the mode selector menu. The keybind also appears in the floating [Keybinds Panel](#keybind-menu). `SetMenuVisibility(false)` hides it from that panel (also persisted by SaveManager).
+
+Setting a value on a disabled picker's parent still stores the value but skips callbacks.
 
 Registered in `Library.Options[Idx]`.
 
@@ -1205,6 +1267,7 @@ Toggle:AddColorPicker("myColor", {
     Default      = Color3.new(1, 1, 1),
     Transparency = nil, -- If a number (0-1) is provided, shows an alpha slider
     Title        = nil,
+    Resizable    = true,
     Callback     = function(Color: Color3) end,
     Changed      = function(Color: Color3) end,
 })
@@ -1220,6 +1283,8 @@ Type
 
 `Title?`string
 
+`Resizable?`boolean
+
 ---
 
 #### Methods
@@ -1228,6 +1293,7 @@ Type
 ColorPicker:SetValue(HSV: {number, number, number} | Color3, Transparency?: number)
 ColorPicker:SetValueRGB(Color: Color3, Transparency?: number)
 ColorPicker:OnChanged(Func: (Color: Color3) -> ())
+ColorPicker:RunChanged()
 ```
 
 | Arg Idx | Argument Description | Type | Default |
@@ -1235,11 +1301,11 @@ ColorPicker:OnChanged(Func: (Color: Color3) -> ())
 | 1 | New color value | Color3 \| table \| function | nil |
 | 2 | Transparency | number? | nil |
 
-Left-click the color swatch to open the picker. Right-click for a context menu with **Copy color**, **Paste color**, **Copy Hex**, and **Copy RGB** options (clipboard options require `setclipboard`).
+Left-click the color swatch to open the picker. Right-click for a context menu with **Copy color**, **Paste color**, **Copy Hex**, and **Copy RGB** options (clipboard options require `setclipboard`). Disabled parents lock the swatch, panel, and hex/RGB inputs.
 
 The picker contains:
 
-- A 200x200 saturation/value map
+- A saturation/value map (140px on mobile, 200px otherwise; drag the grabber to resize when `Resizable`)
 - A hue strip
 - An optional alpha strip (if `Transparency` is set)
 - Hex and RGB text inputs
@@ -1533,17 +1599,20 @@ Toast-style notifications that slide in from the side of the screen.
 ```lua
 local Notif = Library:Notify({
     Title       = "Success",
+    TitleColor  = nil,
     Description = "Action completed",
+    DescriptionColor = nil,
     Time        = 5,
     Icon        = nil,
     BigIcon     = nil,
     IconColor   = nil,
     SoundId     = nil,
+    Volume      = 3,
     Steps       = nil,
     Persist     = false,
 })
 
--- Shorthand (description + optional time):
+-- Shorthand (description + optional time + sound + volume):
 Library:Notify("Something happened", 3)
 ```
 
@@ -1555,7 +1624,11 @@ Type
 
 `Title?`string
 
+`TitleColor?`Color3
+
 `Description?`string
+
+`DescriptionColor?`Color3
 
 `Time?`number \| Instance
 
@@ -1566,6 +1639,8 @@ Type
 `IconColor?`Color3
 
 `SoundId?`number \| string
+
+`Volume?`number
 
 `Steps?`number
 
@@ -1884,9 +1959,12 @@ Floating panels that exist outside the main window. Useful for persistent mini-d
 
 ```lua
 local LabelOverlay = Library:AddDraggableLabel("My Label")
+local IconOverlay = Library:AddDraggableLabel("Pinned", "pin", "left")
 
 LabelOverlay:SetText("New Text")
 LabelOverlay:SetVisible(true)
+LabelOverlay:SetIcon("star")
+LabelOverlay:SetIconPosition("right") -- "left" or "right"
 ```
 
 ##### Draggable Button
@@ -1897,6 +1975,19 @@ local BtnOverlay = Library:AddDraggableButton("Click Me", function(self)
 end)
 
 BtnOverlay:SetText("New Label")
+```
+
+##### Draggable Image Button
+
+An icon-only floating button.
+
+```lua
+local ImgOverlay = Library:AddDraggableImageButton("menu", 24, function(self)
+    -- self is the overlay table
+end)
+
+ImgOverlay:SetIcon("x")
+ImgOverlay:SetIconSize(20)
 ```
 
 ##### Draggable Toggle
@@ -1958,6 +2049,7 @@ Container:AddUIPassthrough("myCustom", { Instance = someFrame, Height = 30 })
 ```lua
 Container:SetCollapsed(true)      -- collapse (same as clicking minimize)
 Container:ToggleCollapsed()       -- flip collapsed state
+Container:IsCollapsed()           -- -> boolean
 Container:Remove()                -- destroy the whole menu (same as clicking close)
 ```
 
@@ -2045,6 +2137,8 @@ local Loading = Library:CreateLoading({
     WindowHeight = 275,
     ContentWidth = 450,
     SidebarWidth = 250,
+
+    AlwaysOnTop = false,
 })
 ```
 
@@ -2069,6 +2163,8 @@ Type
 `WindowWidth?`number
 
 `WindowHeight?`number
+
+`AlwaysOnTop?`boolean
 
 ---
 
@@ -2133,6 +2229,7 @@ Also available as `Loading:Continue()` (alias).
 
 ```lua
 Loading:Destroy()
+Loading:SetAlwaysOnTop(Enabled: boolean)
 ```
 
 `Library.ActiveLoading` references the active loading screen object; `Library:CreateLoading` returns the existing instance with a warning if one is already active rather than creating a second one.
@@ -2182,11 +2279,29 @@ Type
 
 `Library.KeybindContainer`Frame
 
+`Library.KeybindMenu`table
+
 `Library.KeybindToggles`table
 
 `Library.ShowToggleFrameInKeybinds?`boolean
 
 ---
+
+##### Visibility Control
+
+```lua
+local Menu = Library.KeybindMenu
+
+Menu:SetCollapsed(true)       -- collapse the panel
+Menu:ToggleCollapsed()        -- flip collapsed state
+Menu:IsCollapsed()            -- -> boolean
+Menu:SetVisibilityControl(true) -- show the gear button + "Visible Keybinds" panel
+Menu:SetSettingsOpen(true)    -- open the visibility panel
+Menu:ToggleSettings()         -- flip the visibility panel
+Menu:RefreshSettings()        -- rebuild the visibility rows
+```
+
+With visibility control enabled, a gear button appears on the Keybinds panel opening a "Visible Keybinds" panel where each keybind can be individually shown/hidden (via `KeyPicker:SetMenuVisibility`). Hidden entries persist through SaveManager.
 
 ### Utility
 
@@ -2205,10 +2320,16 @@ Library.ShowCustomCursor = true
 These functions allow you to set your own image instead of the default custom cursor.
 
 ```lua
-Library:ChangeCursorIcon(ImageId: string)
-Library:ChangeCursorIconSize(Size: UDim2)
-Library:ResetCursorIcon()
+Library.Cursor:ChangeCrossColor(Color: Color3)
+Library.Cursor:ResetCross()
+Library.Cursor:ChangeIcon(ImageId: string)
+Library.Cursor:ChangeIconColor(Color: Color3)
+Library.Cursor:ChangeIconSize(Size: UDim2)
+Library.Cursor:ResetIcon()
+Library.Cursor:ResetCursor()
 ```
+
+The older `Library:ChangeCursorIcon`, `Library:ChangeCursorIconSize`, and `Library:ResetCursorIcon` still work but are deprecated in favor of the `Library.Cursor` versions.
 
 ---
 
@@ -2581,6 +2702,9 @@ SaveManager:IgnoreThemeSettings()
 | `SaveManager.Library` | Library | `nil` | Reference to the Astral library |
 | `SaveManager.Ignore` | table | `{}` | Indexes to ignore during save/load |
 | `SaveManager.CurrentConfig` | string? | `nil` | Name of the config currently loaded/active |
+| `SaveManager.AutoloadConfig` | string? | `nil` | Config auto-loaded on startup |
+| `SaveManager.LoadingOrder` | table | `{}` | Element-type load order (used when `UseLoadingOrder` is on) |
+| `SaveManager.UseLoadingOrder` | boolean | `false` | Sort loads by `LoadingOrder` |
 
 ---
 
@@ -2592,11 +2716,24 @@ SaveManager:Load(name: string): (success: boolean, error: string?)
 SaveManager:Delete(name: string): (success: boolean, error: string?)
 SaveManager:RefreshConfigList(): { string }
 SaveManager:SetIgnoreIndexes(list: { string })
+SaveManager:SetLoadingOrder(Enabled: boolean, Order: { string }?)
 SaveManager:IgnoreThemeSettings()
 SaveManager:ResetToDefaults()
 SaveManager:EnsureStartupConfig(): (name: string)
 SaveManager:StartAutoSaveWatcher()
+SaveManager:SaveJSON(): (encoded: string?, success: boolean, error: string?)
+SaveManager:LoadJSON(content: string): (success: boolean, error: string?)
+SaveManager:GetAutoloadConfig(): (name: string, success: boolean, error: string?)
+SaveManager:SaveAutoloadConfig(name: string): (success: boolean, error: string?)
+SaveManager:LoadAutoloadConfig()
+SaveManager:DeleteAutoloadConfig(): (success: boolean, error: string?)
 ```
+
+| Arg Idx | Argument Description | Type | Default |
+| --- | --- | --- | --- |
+| 1 | Config name | string | nil |
+
+`SetLoadingOrder(true, { "Toggle", "Dropdown", "Slider" })` loads element types in the given order (everything else last). Loading fires each element's callbacks even when the saved value equals the current one. Keybind-menu state (visibility, position, collapsed, hidden entries) and collapsed-section states persist inside the config automatically. The name `"autoload"` is reserved.
 
 | Arg Idx | Argument Description | Type | Default |
 | --- | --- | --- | --- |
@@ -2612,9 +2749,11 @@ SaveManager:BuildConfigSection(tab: Tab)
 
 This creates a full UI section with:
 
-- A dropdown listing every saved config, auto-selecting the currently active one
-- An input + button to create a new config (starts from default values, not whatever's currently loaded)
-- A button to delete the current config -- always resets every registered Toggle/Option back to its library-defined default (via `ResetToDefaults`) afterward and saves that as the player's default config
+- A dropdown listing every saved config (autoload config marked with an `(autoload)` suffix), auto-selecting the currently active one
+- Load / Overwrite / Delete buttons, each behind a confirmation dialog for destructive actions
+- An input + button to create a new config (starts from default values, not whatever's currently loaded; overwriting an existing name asks first)
+- Autoload controls: set any config to load automatically, reset it, with a live "current autoload" label
+- Config JSON import/export (paste JSON to import, export copies to input + clipboard)
 - An always-on autosave watcher -- any change to a registered Toggle/Option is detected within ~0.5s and written to the active config automatically
 - Automatic config list refreshing, so the dropdown stays current without a manual refresh button
 
@@ -2762,21 +2901,30 @@ ThemeManager includes 18 pre-configured themes:
 | `ThemeManager.AppliedToTab` | boolean | `false` | Whether theme manager is applied to a tab |
 | `ThemeManager.BuiltInThemes` | table | -- | Table of built-in themes |
 | `ThemeManager.DefaultTheme` | string | `"Default"` | Default theme name |
+| `ThemeManager.DefaultThemeName` | string? | `nil` | Theme saved as default (shown with a `(default)` suffix) |
+| `ThemeManager.ContrastLabel` | Label? | `nil` | Live WCAG contrast readout label |
 
 ---
 
 #### Core Methods
 
 ```lua
-ThemeManager:ApplyTheme(themeName: string)
+ThemeManager:ApplyTheme(themeName: string): (success: boolean, error: string?)
+ThemeManager:ApplyThemeData(data: table): (success: boolean, error: string?)
 ThemeManager:ThemeUpdate()
 ThemeManager:GetCustomTheme(fileName: string): table?
 ThemeManager:LoadDefault()
-ThemeManager:SaveDefault(themeName: string)
+ThemeManager:SaveDefault(themeName: string): (success: boolean, error: string?)
+ThemeManager:GetDefaultTheme(): (name: string, success: boolean, error: string?)
+ThemeManager:DeleteDefaultTheme(): (success: boolean, error: string?)
 ThemeManager:SetDefaultTheme(theme: table)
-ThemeManager:SaveCustomTheme(fileName: string)
+ThemeManager:SaveCustomTheme(fileName: string): (success: boolean, error: string?)
 ThemeManager:Delete(themeName: string): (success: boolean, error: string?)
 ThemeManager:ReloadCustomThemes(): { string }
+ThemeManager:SaveJSON(): (encoded: string, success: boolean, error: string?)
+ThemeManager:LoadJSON(content: string): (success: boolean, error: string?)
+ThemeManager:GetContrastReport(): { Ratio: number, PairName: string, Passes: boolean }
+ThemeManager:UpdateContrastWarning()
 ```
 
 | Arg Idx | Argument Description | Type | Default |
@@ -2802,11 +2950,14 @@ ThemeManager:CreateThemeManager(groupbox: Section)
 The GUI includes:
 
 - Color pickers for all theme colors (Background, Main, Accent, Outline, Font)
+- Live WCAG contrast readout (warns + notifies when text contrast drops below 4.5:1; saving a low-contrast theme asks for confirmation)
 - Font face dropdown
-- Built-in theme dropdown with instant preview
-- Custom theme creation (name input + save button)
-- Custom theme management (load, overwrite, delete, refresh)
-- Default theme management (set/reset default)
+- Background image input (custom icon or `http(s)` URL, also settable via `Library:SetBackgroundImage`)
+- Built-in theme dropdown with instant preview (default theme marked `(default)`)
+- Custom theme creation (name input + save button, overwrite asks first)
+- Custom theme management (load, overwrite, delete, refresh -- destructive actions ask first)
+- Default theme management (set/reset default with a live label)
+- Theme JSON import/export (paste JSON to import, export copies to input + clipboard)
 - Automatic theme update on color change
 
 ---
@@ -2821,6 +2972,7 @@ Themes control the following color fields:
 - **BackgroundColor**: Background color
 - **OutlineColor**: Border/outline color
 - **FontFace**: Font family
+- **BackgroundImage**: Window background image (custom icon or URL, may be `""`)
 
 ---
 
