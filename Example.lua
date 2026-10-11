@@ -10,6 +10,11 @@ local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/
 SaveManager:SetLibrary(Library)
 ThemeManager:SetLibrary(Library)
 
+--// Build stamp: proves which Astral.lua actually loaded (HttpGet can serve
+--// a cached copy). Printed + shown in the window footer below. \\--
+local AstralBuild = tostring((Library and (Library.BuildId or Library.VERSION)) or "unknown")
+print("[Astral] loaded build:", AstralBuild)
+
 -- NOTE: SetLibrary MUST be called before Library:CreateWindow (below), not
 -- after. CreateWindow decides synchronously, before it returns, whether to
 -- auto-show the window -- it only skips that if Library.DeferAutoShowTo is
@@ -36,7 +41,7 @@ ThemeManager:SetLibrary(Library)
 local Window = Library:CreateWindow({
     Title            = "Astral UI — Reference",
     Icon             = "AstralIcon",
-    Footer           = "Quick Reference v2.0",
+    Footer           = "Quick Reference v2.0 • " .. AstralBuild,
     Size             = UDim2.fromOffset(940, 620),
     Center           = true,
     Resizable        = true,

@@ -247,6 +247,10 @@ do
 end
 
 local Library = {
+    BuildId = "149de7a-virt",
+    BuildDate = "2026-10-11",
+    SearchVirtualized = true,
+
     LocalPlayer = LocalPlayer,
     DevicePlatform = nil,
     IsMobile = false,
@@ -15730,9 +15734,13 @@ function Library:CreateWindow(WindowInfo)
             end
 
             if MyGen ~= BuildGeneration then return end
+            Library.LastSearchResultCount = #RowData
             ScrollFrame.CanvasSize = UDim2.fromOffset(0, #RowData * RowH + 6)
             ScrollFrame.CanvasPosition = Vector2.zero
             RenderVisible()
+            if not Filtering then
+                print(string.format("[Astral] search open (%s): %d rows, %d pooled", Library.BuildId, #RowData, #RowPool))
+            end
         end
 
         local function OpenOverlay()
