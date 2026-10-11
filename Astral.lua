@@ -2510,11 +2510,20 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         RestColorKey = StrokeRegistry.Color
     end
 
-    --// Outer glow: a thick, near-transparent accent stroke behind the crisp
-    --// 1px outline. Layered strokes read as a bloom instead of a flat ring. \\--
-    local GlowStroke = New("UIStroke", {
+    --// Outer glow: two stacked, near-transparent accent strokes behind the
+    --// crisp 1px outline. Stepped falloff fakes a soft bloom since strokes
+    --// are hard-edged by nature. \\--
+    local GlowTweenInfo = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+    local GlowInner = New("UIStroke", {
         Color = AccentKey,
-        Thickness = 5,
+        Thickness = 3,
+        Transparency = 1,
+        Parent = Stroke.Parent,
+    })
+    local GlowOuter = New("UIStroke", {
+        Color = AccentKey,
+        Thickness = 7,
         Transparency = 1,
         Parent = Stroke.Parent,
     })
@@ -2554,7 +2563,9 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
     local State = {
         Box = Box,
         Stroke = Stroke,
-        GlowStroke = GlowStroke,
+        GlowInner = GlowInner,
+        GlowOuter = GlowOuter,
+        GlowTweenInfo = GlowTweenInfo,
         BackgroundTarget = TintBackground and BackgroundTarget or nil,
         Focused = false,
         ZBoosted = false,
@@ -2571,7 +2582,8 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         FocusedThickness = FocusedThickness,
         BackgroundShift = BackgroundShift,
 
-        GlowTransparency = 0.75,
+        GlowInnerTransparency = 0.82,
+        GlowOuterTransparency = 0.93,
     }
 
     --// Lifts the highlighted field above its siblings while focused so the
@@ -2641,9 +2653,16 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         self.Stroke.Transparency = self.FocusedTransparency
         self.Stroke.Thickness = self.FocusedThickness
 
-        if self.GlowStroke.Parent then
-            self.GlowStroke.Color = self:ResolveAccentColor()
-            self.GlowStroke.Transparency = self.GlowTransparency
+        for _, Glow in { self.GlowInner, self.GlowOuter } do
+            if Glow.Parent then
+                Glow.Color = self:ResolveAccentColor()
+            end
+        end
+        if self.GlowInner.Parent then
+            self.GlowInner.Transparency = self.GlowInnerTransparency
+        end
+        if self.GlowOuter.Parent then
+            self.GlowOuter.Transparency = self.GlowOuterTransparency
         end
 
         if self.BackgroundTarget then
@@ -2666,10 +2685,17 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 Transparency = self.FocusedTransparency,
             }):Play()
 
-            if self.GlowStroke.Parent then
-                TweenService:Create(self.GlowStroke, Library.TweenInfo, {
-                    Color = self:ResolveAccentColor(),
-                    Transparency = self.GlowTransparency,
+            local Accent = self:ResolveAccentColor()
+            if self.GlowInner.Parent then
+                TweenService:Create(self.GlowInner, self.GlowTweenInfo, {
+                    Color = Accent,
+                    Transparency = self.GlowInnerTransparency,
+                }):Play()
+            end
+            if self.GlowOuter.Parent then
+                TweenService:Create(self.GlowOuter, self.GlowTweenInfo, {
+                    Color = Accent,
+                    Transparency = self.GlowOuterTransparency,
                 }):Play()
             end
 
@@ -2686,8 +2712,13 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 Transparency = self.RestTransparency,
             }):Play()
 
-            if self.GlowStroke.Parent then
-                TweenService:Create(self.GlowStroke, Library.TweenInfo, {
+            if self.GlowInner.Parent then
+                TweenService:Create(self.GlowInner, self.GlowTweenInfo, {
+                    Transparency = 1,
+                }):Play()
+            end
+            if self.GlowOuter.Parent then
+                TweenService:Create(self.GlowOuter, self.GlowTweenInfo, {
                     Transparency = 1,
                 }):Play()
             end
@@ -14981,6 +15012,36 @@ function Library:CreateWindow(WindowInfo)
             end
         end
 
+        local function EscapeRichText(Value: string): string
+            return tostring(Value):gsub("[<>&]", { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;" })
+        end
+
+        --// Wraps the query's match in accent + bold. The query is spaceless
+        --// (normalized), so match against spaceless text and map back. \\--
+        local function HighlightMatch(Text: string, Query: string): string
+            local Stripped, Map = {}, {}
+            local Lower = Text:lower()
+            for i = 1, #Lower do
+                local Ch = Lower:sub(i, i)
+                if not Ch:match("%s") then
+                    table.insert(Stripped, Ch)
+                    table.insert(Map, i)
+                end
+            end
+
+            local S, E = table.concat(Stripped):find(Query, 1, true)
+            if not S then
+                return EscapeRichText(Text)
+            end
+
+            local OrigStart, OrigEnd = Map[S], Map[E]
+            local Hex = string.format("#%s", Library.Scheme.AccentColor:ToHex())
+
+            return EscapeRichText(Text:sub(1, OrigStart - 1))
+                .. string.format('<font color="%s"><b>%s</b></font>', Hex, EscapeRichText(Text:sub(OrigStart, OrigEnd)))
+                .. EscapeRichText(Text:sub(OrigEnd + 1))
+        end
+
         local function MakeRow(Cfg, Order)
             local Depth = Cfg.Depth or 0
             local Z     = 12002
@@ -15090,11 +15151,19 @@ function Library:CreateWindow(WindowInfo)
             end
             local LblTextSize = Cfg.IsTab and 13 or 12
 
+            local LblText = Cfg.Text
+            if Cfg.Highlight and Cfg.Highlight ~= "" then
+                LblText = HighlightMatch(Cfg.Text, Cfg.Highlight)
+            else
+                LblText = EscapeRichText(Cfg.Text)
+            end
+
             local Lbl = New("TextLabel", {
                 BackgroundTransparency = 1,
                 Position       = UDim2.new(0, TextX, 0, 0),
                 Size           = UDim2.new(1, -(TextX + (BadgeW > 0 and BadgeW + 8 or 0)), 1, 0),
-                Text           = Cfg.Text,
+                Text           = LblText,
+                RichText       = true,
                 TextColor3     = RowTextColorFn or "FontColor",
                 TextSize       = LblTextSize,
                 FontFace       = LblFont,
@@ -15271,6 +15340,7 @@ function Library:CreateWindow(WindowInfo)
                     Text       = TabName,
                     Depth      = 0,
                     IsTab      = true,
+                    Highlight  = Filtering and Search or nil,
                     OnActivate = function() NavigateTo(Tab, nil, nil) end,
                 }, RowOrder))
 
@@ -15285,6 +15355,7 @@ function Library:CreateWindow(WindowInfo)
                         Depth        = 1,
                         IsSection    = true,
                         SectionMatch = SecEntry.SectionMatch,
+                        Highlight    = Filtering and Search or nil,
                         IsLast       = IsLastSec and #SecEntry.Elements == 0,
                         OnActivate   = function() NavigateTo(Tab, Section, nil) end,
                     }, RowOrder))
@@ -15305,6 +15376,7 @@ function Library:CreateWindow(WindowInfo)
 
                                 IsSubSection = true,
                                 SectionMatch = true,
+                                Highlight    = Filtering and Search or nil,
                                 IsLast       = IsLastInGroup,
                                 OnActivate   = function() NavigateTo(Tab, Section, nil, TargetSubSection) end,
                             }, RowOrder))
@@ -15317,6 +15389,7 @@ function Library:CreateWindow(WindowInfo)
                                 IsElement   = true,
                                 IsLast      = IsLastInGroup,
                                 ElementType = ElEntry.ElType,
+                                Highlight   = Filtering and Search or nil,
                                 OnActivate  = function() NavigateTo(Tab, Section, ElInfo) end,
                             }, RowOrder))
                         end
