@@ -31,6 +31,10 @@ local Toggles = {}
 local Options = {}
 local Tooltips = {}
 
+--// Forward declarations populated further down (animation system) \\--
+local TransparencyCache = {}
+local ActiveTabTweens = setmetatable({}, { __mode = "k" })
+
 local BaseURL = "https://raw.githubusercontent.com/inCythe/Astral/refs/heads/main/"
 local CustomImageManager = {}
 local CustomImageManagerAssets = {
@@ -298,8 +302,22 @@ local Library = {
     CursorZIndexOffset = nil,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
+    OriginalMouseIconEnabled = UserInputService.MouseIconEnabled,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
     NotifyTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+
+    WindowAnimationInfo = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    TabTransitionInfo = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    TabSwipeOffset = 26,
+    TabSwipeFrom = "bottom",
+    PreviousTab = nil,
+
+    Animations = {
+        ToggleWindow = false,
+        TabSwitch = false,
+        Dropdown = false,
+        KeyPicker = false,
+    },
 
     Toggled = false,
     Unloaded = false,
@@ -449,6 +467,22 @@ local Templates = {
         Center = true,
         Resizable = true,
         AlwaysOnTop = false,
+
+        Snapping = false,
+        SnapDistance = 28,
+        SnapMargin = 8,
+        SnapAvoidCoreGui = true,
+
+        Animations = {
+            ToggleWindow = false,
+            TabSwitch = false,
+            Dropdown = false,
+            KeyPicker = false,
+        },
+        TabTransitionTime = 0.22,
+        TabSwipeOffset = 26,
+        TabSwipeFrom = "bottom",
+
         SearchbarSize = UDim2.fromScale(1, 1),
         CornerRadius = 6,
         NotifySide = "Right",
@@ -746,6 +780,67 @@ local function IsDragInput(Input: InputObject, IncludeM2: boolean?)
     return IsMouseInput(Input, IncludeM2)
         and (Input.UserInputState == Enum.UserInputState.Begin or Input.UserInputState == Enum.UserInputState.Change)
         and Library.IsRobloxFocused
+end
+
+--// Window Snapping \\--
+local function GetCoreGuiInset(): (Vector2, Vector2)
+    local Success, TopLeft, BottomRight = pcall(function()
+        return cloneref(game:GetService("GuiService")):GetGuiInset()
+    end)
+
+    if Success and TopLeft and BottomRight then
+        return TopLeft, BottomRight
+    end
+
+    return Vector2.zero, Vector2.zero
+end
+
+local function GetSnapEdges(ElemSize: Vector2, ViewportSize: Vector2, Margin: number, AvoidCoreGui: boolean)
+    local SafeMin, SafeMax = Vector2.zero, ViewportSize
+
+    if AvoidCoreGui then
+        local TopLeftInset, BottomRightInset = GetCoreGuiInset()
+        SafeMin = TopLeftInset
+        SafeMax = ViewportSize - BottomRightInset
+    end
+
+    local TargetsX = {
+        LeftEdge = SafeMin.X + Margin,
+        Center = SafeMin.X + (SafeMax.X - SafeMin.X - ElemSize.X) / 2,
+        RightEdge = SafeMax.X - ElemSize.X - Margin,
+    }
+    local TargetsY = {
+        TopEdge = SafeMin.Y + Margin,
+        Center = SafeMin.Y + (SafeMax.Y - SafeMin.Y - ElemSize.Y) / 2,
+        BottomEdge = SafeMax.Y - ElemSize.Y - Margin,
+    }
+
+    return TargetsX, TargetsY
+end
+
+local function GetClosestSnapTarget(Value: number, Targets: { [string]: number }, Distance: number): (number?, string?)
+    local ClosestName, ClosestValue, ClosestDist = nil, nil, Distance
+
+    for Name, Target in Targets do
+        local Dist = math.abs(Value - Target)
+        if Dist <= ClosestDist then
+            ClosestDist = Dist
+            ClosestName = Name
+            ClosestValue = Target
+        end
+    end
+
+    return ClosestValue, ClosestName
+end
+
+local function GetSnapGuideOffset(Name: string, SnappedValue: number, ElemDimension: number): number
+    if Name == "RightEdge" or Name == "BottomEdge" then
+        return SnappedValue + ElemDimension
+    elseif Name == "Center" then
+        return SnappedValue + ElemDimension / 2
+    end
+
+    return SnappedValue -- LeftEdge / TopEdge
 end
 
 local function GetTableSize(Table: { [any]: any })
@@ -1907,7 +2002,7 @@ local ModalElement = New("TextButton", {
     Parent = ScreenGui,
 })
 
-local Cursor, CursorCustomImage
+local Cursor, CursorV, CursorCustomImage
 do
 
     local CursorZIndex = Library.CursorZIndex
@@ -1928,7 +2023,7 @@ do
         Parent = Cursor,
     })
 
-    local CursorV = New("Frame", {
+    CursorV = New("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         BackgroundColor3 = "WhiteColor",
         Position = UDim2.fromScale(0.5, 0.5),
@@ -1952,8 +2047,82 @@ do
         Size = UDim2.fromOffset(20, 20),
         ZIndex = CursorZIndex,
         Visible = false,
-        Parent = Cursor
+        Parent = ScreenGui
     })
+end
+
+local InnerCross = { Cursor, CursorV }
+local CustomImageEnabled = false
+
+local function RestoreMouseIcon()
+    pcall(function()
+        RunService:UnbindFromRenderStep(Library.ShowCursorBinding)
+        RunService.RenderStepped:Wait()
+    end)
+
+    UserInputService.MouseIconEnabled = Library.OriginalMouseIconEnabled
+    if Cursor then Cursor.Visible = false end
+    if CursorV then CursorV.Visible = false end
+    if CursorCustomImage then CursorCustomImage.Visible = false end
+end
+
+Library.Cursor = {}
+
+function Library.Cursor:ResetCross()
+    for _, Inner in InnerCross do
+        Library.Registry[Inner].BackgroundColor3 = "WhiteColor"
+        Inner.BackgroundColor3 = Library.Scheme.WhiteColor
+    end
+end
+
+function Library.Cursor:ResetIcon()
+    CustomImageEnabled = false
+    Cursor.Visible = true
+    CursorV.Visible = true
+    CursorCustomImage.Visible = false
+    CursorCustomImage.ImageColor3 = Color3.new(1, 1, 1)
+    CursorCustomImage.Size = UDim2.fromOffset(20, 20)
+end
+
+function Library.Cursor:ResetCursor()
+    Library.Cursor:ResetCross()
+    Library.Cursor:ResetIcon()
+end
+
+function Library.Cursor:ChangeCrossColor(Color: Color3)
+    assert(typeof(Color) == "Color3", "Color3 expected.")
+    for _, Inner in InnerCross do
+        Inner.BackgroundColor3 = Color
+        Library.Registry[Inner].BackgroundColor3 = nil
+    end
+end
+
+function Library.Cursor:ChangeIcon(ImageId: string)
+    if not ImageId or ImageId == "" then
+        Library.Cursor:ResetIcon()
+        return
+    end
+
+    local Icon = Library:GetCustomIcon(ImageId)
+    assert(Icon, "Image must be a valid Roblox asset or a valid URL or a valid lucide icon.")
+
+    Cursor.Visible = false
+    CursorV.Visible = false
+    CustomImageEnabled = true
+    CursorCustomImage.Visible = true
+    CursorCustomImage.Image = Icon.Url
+    CursorCustomImage.ImageRectOffset = Icon.ImageRectOffset
+    CursorCustomImage.ImageRectSize = Icon.ImageRectSize
+end
+
+function Library.Cursor:ChangeIconColor(Color: Color3)
+    assert(typeof(Color) == "Color3", "Color3 expected.")
+    CursorCustomImage.ImageColor3 = Color
+end
+
+function Library.Cursor:ChangeIconSize(Size: UDim2)
+    assert(typeof(Size) == "UDim2", "UDim2 expected.")
+    CursorCustomImage.Size = Size
 end
 
 local NotificationArea
@@ -1983,28 +2152,18 @@ do
 end
 
 function Library:ResetCursorIcon()
-    CursorCustomImage.Visible = false
-    CursorCustomImage.Size = UDim2.fromOffset(20, 20)
+    warn("Astral:ResetCursorIcon is deprecated, please use Astral.Cursor:ResetIcon instead.")
+    Library.Cursor:ResetIcon()
 end
 
 function Library:ChangeCursorIcon(ImageId: string)
-    if not ImageId or ImageId == "" then
-        Library:ResetCursorIcon()
-        return
-    end
-
-    local Icon = Library:GetCustomIcon(ImageId)
-    assert(Icon, "Image must be a valid Roblox asset or a valid URL or a valid lucide icon.")
-
-    CursorCustomImage.Visible = true
-    CursorCustomImage.Image = Icon.Url
-    CursorCustomImage.ImageRectOffset = Icon.ImageRectOffset
-    CursorCustomImage.ImageRectSize = Icon.ImageRectSize
+    warn("Astral:ChangeCursorIcon is deprecated, please use Astral.Cursor:ChangeIcon instead.")
+    Library.Cursor:ChangeIcon(ImageId)
 end
 
 function Library:ChangeCursorIconSize(Size: UDim2)
-    assert(typeof(Size) == "UDim2", "UDim2 expected.")
-    CursorCustomImage.Size = Size
+    warn("Astral:ChangeCursorIconSize is deprecated, please use Astral.Cursor:ChangeIconSize instead.")
+    Library.Cursor:ChangeIconSize(Size)
 end
 
 function Library:GetBetterColor(Color: Color3, Add: number): Color3
@@ -2077,11 +2236,58 @@ function Library:SafeCallback(Func: (...any) -> ...any, ...: any)
     return table.unpack(Result, 2, Result.n)
 end
 
-function Library:MakeDraggable(UI: GuiObject, DragFrame: GuiObject, IgnoreToggled: boolean?, IsMainWindow: boolean?)
+function Library:MakeDraggable(
+    UI: GuiObject,
+    DragFrame: GuiObject,
+    IgnoreToggled: boolean?,
+    IsMainWindow: boolean?,
+    SnapConfig: { Enabled: boolean, Distance: number?, Margin: number?, AvoidCoreGui: boolean? }?
+)
     local StartPos
     local FramePos
     local Dragging = false
     local Changed
+
+    local SnapGuideX, SnapGuideY
+
+    local function GetSnapGuides()
+        if not SnapGuideX then
+            SnapGuideX = New("Frame", {
+                BackgroundColor3 = "AccentColor",
+                BackgroundTransparency = 0.25,
+                BorderSizePixel = 0,
+                AnchorPoint = Vector2.new(0.5, 0),
+                Size = UDim2.new(0, 2, 1, 0),
+                Visible = false,
+                ZIndex = 10000,
+                Parent = ScreenGui,
+            })
+        end
+
+        if not SnapGuideY then
+            SnapGuideY = New("Frame", {
+                BackgroundColor3 = "AccentColor",
+                BackgroundTransparency = 0.25,
+                BorderSizePixel = 0,
+                AnchorPoint = Vector2.new(0, 0.5),
+                Size = UDim2.new(1, 0, 0, 2),
+                Visible = false,
+                ZIndex = 10000,
+                Parent = ScreenGui,
+            })
+        end
+
+        return SnapGuideX, SnapGuideY
+    end
+
+    local function HideSnapGuides()
+        if SnapGuideX then
+            SnapGuideX.Visible = false
+        end
+        if SnapGuideY then
+            SnapGuideY.Visible = false
+        end
+    end
 
     local function GetOwningScreenGui(): ScreenGui?
         return UI:FindFirstAncestorOfClass("ScreenGui")
@@ -2106,6 +2312,7 @@ function Library:MakeDraggable(UI: GuiObject, DragFrame: GuiObject, IgnoreToggle
             end
 
             Dragging = false
+            HideSnapGuides()
             if Changed and Changed.Connected then
                 Changed:Disconnect()
                 Changed = nil
@@ -2123,6 +2330,7 @@ function Library:MakeDraggable(UI: GuiObject, DragFrame: GuiObject, IgnoreToggle
         then
 
             Dragging = false
+            HideSnapGuides()
             if Changed and Changed.Connected then
                 Changed:Disconnect()
                 Changed = nil
@@ -2133,8 +2341,43 @@ function Library:MakeDraggable(UI: GuiObject, DragFrame: GuiObject, IgnoreToggle
 
         if Dragging and IsHoverInput(Input) then
             local Delta = Input.Position - StartPos
+            local NewX = FramePos.X.Offset + Delta.X
+            local NewY = FramePos.Y.Offset + Delta.Y
+
+            if SnapConfig and SnapConfig.Enabled then
+                local ViewportSize = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+                local Distance = SnapConfig.Distance or 28
+                local Margin = SnapConfig.Margin or 8
+
+                local AbsX = FramePos.X.Scale * ViewportSize.X + NewX
+                local AbsY = FramePos.Y.Scale * ViewportSize.Y + NewY
+
+                local ElemSize = UI.AbsoluteSize
+                local TargetsX, TargetsY = GetSnapEdges(ElemSize, ViewportSize, Margin, SnapConfig.AvoidCoreGui ~= false)
+                local SnappedX, SnappedXName = GetClosestSnapTarget(AbsX, TargetsX, Distance)
+                local SnappedY, SnappedYName = GetClosestSnapTarget(AbsY, TargetsY, Distance)
+
+                if SnappedX then
+                    NewX = SnappedX - FramePos.X.Scale * ViewportSize.X
+                end
+                if SnappedY then
+                    NewY = SnappedY - FramePos.Y.Scale * ViewportSize.Y
+                end
+
+                local GuideX, GuideY = GetSnapGuides()
+                GuideX.Visible = SnappedX ~= nil
+                if SnappedX then
+                    GuideX.Position = UDim2.fromOffset(GetSnapGuideOffset(SnappedXName, SnappedX, ElemSize.X), 0)
+                end
+
+                GuideY.Visible = SnappedY ~= nil
+                if SnappedY then
+                    GuideY.Position = UDim2.fromOffset(0, GetSnapGuideOffset(SnappedYName, SnappedY, ElemSize.Y))
+                end
+            end
+
             UI.Position =
-                UDim2.new(FramePos.X.Scale, FramePos.X.Offset + Delta.X, FramePos.Y.Scale, FramePos.Y.Offset + Delta.Y)
+                UDim2.new(FramePos.X.Scale, NewX, FramePos.Y.Scale, NewY)
         end
     end))
 end
@@ -3773,13 +4016,69 @@ function Library:Unload()
     Library.AutoDPIScaleConnection = nil
 
     table.clear(Library.FocusHighlights)
+    table.clear(TransparencyCache)
+    table.clear(ActiveTabTweens)
 
-    for _, Callback in Library.UnloadSignals do
-        Library:SafeCallback(Callback)
+    pcall(function()
+        RunService:UnbindFromRenderStep(Library.ShowCursorBinding)
+    end)
+    RestoreMouseIcon()
+
+    if Library.KeybindMenu and Library.KeybindMenu.SettingsFrame then
+        pcall(function()
+            Library.KeybindMenu.SettingsFrame:Destroy()
+        end)
+        Library.KeybindMenu.SettingsFrame = nil
+        Library.KeybindMenu.SettingsContainer = nil
+        Library.KeybindMenu.SettingsOpen = false
     end
+    Library.KeybindMenu = nil
+    Library.KeybindFrame = nil
+    Library.KeybindContainer = nil
+    table.clear(Library.KeybindToggles)
+
+    Library.ActiveTab = nil
+    Library.PreviousTab = nil
+    Library.Searching = false
+    Library.LastSearchTab = nil
+
+    for _, Tab in Library.Tabs do
+        if typeof(Tab) ~= "table" then
+            continue
+        end
+
+        pcall(function()
+            if Tab.TooltipTable then
+                Tab.TooltipTable:Destroy()
+                Tab.TooltipTable = nil
+            end
+        end)
+        pcall(function()
+            if Tab.Button then
+                Tab.Button:Destroy()
+            end
+        end)
+        pcall(function()
+            if Tab.Container then
+                Tab.Container:Destroy()
+            end
+        end)
+    end
+    table.clear(Library.Tabs)
+    table.clear(Library.TabButtons)
+
+    table.clear(Toggles)
+    table.clear(Options)
+    table.clear(Buttons)
+    table.clear(Labels)
 
     for _, Tooltip in Tooltips do
         Library:SafeCallback(Tooltip.Destroy, Tooltip)
+    end
+    table.clear(Tooltips)
+
+    for _, Callback in Library.UnloadSignals do
+        Library:SafeCallback(Callback)
     end
 
     Library.Unloaded = true
@@ -10125,6 +10424,106 @@ function Library:Notify(...)
     return Data
 end
 
+--// Animations \\--
+function Library:PlayTabAnimation(Tab, Showing: boolean, OnComplete: (() -> ())?)
+    if type(Tab) ~= "table" or not Tab.Container then
+        if OnComplete then
+            OnComplete()
+        end
+
+        return
+    end
+
+    local TabContainer = Tab.Container :: Frame
+    local Existing = ActiveTabTweens[TabContainer]
+    if Existing then
+        StopTween(Existing, true)
+        ActiveTabTweens[TabContainer] = nil
+    end
+
+    local BaseZIndex = TabContainer.ZIndex
+    if not (Library.Animations and Library.Animations.TabSwitch) then
+        TabContainer.Visible = Showing
+        TabContainer.Position = UDim2.fromScale(0, 0)
+        TabContainer.ZIndex = BaseZIndex
+
+        if OnComplete then
+            OnComplete()
+        end
+
+        return
+    end
+
+    if Showing then
+        local TransitionInfo = Library.TabTransitionInfo or TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local Offset = Library.TabSwipeOffset or 26
+        local SwipeFrom = string.lower(Library.TabSwipeFrom or "bottom")
+        local StartPosition
+        local StartingPositions = {
+            Left = UDim2.fromOffset(-Offset, 0),
+            Right = UDim2.fromOffset(Offset, 0),
+            Top = UDim2.fromOffset(0, -Offset),
+            Bottom = UDim2.fromOffset(0, Offset),
+        }
+
+        if SwipeFrom == "auto" and Library.PreviousTab then
+            local CurrentOrder = Tab.Button and Tab.Button.LayoutOrder
+            local PreviousOrder = Library.PreviousTab.Button and Library.PreviousTab.Button.LayoutOrder
+            if CurrentOrder and PreviousOrder then
+                StartPosition = CurrentOrder > PreviousOrder and StartingPositions.Top or StartingPositions.Bottom
+            else
+                StartPosition = StartingPositions.Bottom
+            end
+        elseif SwipeFrom == "left" then
+            StartPosition = StartingPositions.Left
+        elseif SwipeFrom == "top" then
+            StartPosition = StartingPositions.Top
+        elseif SwipeFrom == "right" then
+            StartPosition = StartingPositions.Right
+        else -- bottom (Default)
+            StartPosition = StartingPositions.Bottom
+        end
+
+        TabContainer.ZIndex = BaseZIndex + 1
+        TabContainer.Position = StartPosition
+        TabContainer.Visible = true
+
+        local Tween = TweenService:Create(TabContainer, TransitionInfo, {
+            Position = UDim2.fromScale(0, 0)
+        })
+
+        ActiveTabTweens[TabContainer] = Tween
+        Tween:Play()
+
+        local Connection; Connection = Tween.Completed:Connect(function(PlaybackState)
+            if Connection then
+                Connection:Disconnect()
+            end
+
+            if ActiveTabTweens[TabContainer] == Tween then
+                ActiveTabTweens[TabContainer] = nil
+            end
+
+            if PlaybackState == Enum.PlaybackState.Cancelled then
+                return
+            end
+
+            TabContainer.ZIndex = BaseZIndex
+            if OnComplete then
+                OnComplete()
+            end
+        end)
+    else
+        TabContainer.Visible = false
+        TabContainer.Position = UDim2.fromScale(0, 0)
+        TabContainer.ZIndex = BaseZIndex
+
+        if OnComplete then
+            OnComplete()
+        end
+    end
+end
+
 function Library:CreateWindow(WindowInfo)
     local ExplicitDPIScale = typeof(WindowInfo) == "table" and WindowInfo.DPIScale or nil
     WindowInfo = Library:Validate(WindowInfo, Templates.Window)
@@ -10204,6 +10603,15 @@ function Library:CreateWindow(WindowInfo)
     Library.Scheme.Font = WindowInfo.Font
     Library.ToggleKeybind = WindowInfo.ToggleKeybind
 
+    Library.Animations = WindowInfo.Animations
+    Library.TabTransitionInfo = TweenInfo.new(
+        math.max(0, WindowInfo.TabTransitionTime or 0.22),
+        Enum.EasingStyle.Quad,
+        Enum.EasingDirection.Out
+    )
+    Library.TabSwipeOffset = math.max(1, WindowInfo.TabSwipeOffset or 26)
+    Library.TabSwipeFrom = WindowInfo.TabSwipeFrom or "bottom"
+
     local IsDefaultSearchbarSize = WindowInfo.SearchbarSize == UDim2.fromScale(1, 1)
     local MainFrame
     local DividerLine
@@ -10236,6 +10644,158 @@ function Library:CreateWindow(WindowInfo)
         Library.KeybindFrame.AnchorPoint = Vector2.new(0, 0.5)
         Library.KeybindFrame.Position = UDim2.new(0, 6, 0.5, 0)
         Library.KeybindFrame.Visible = false
+
+        local SettingsHolder, SettingsContainer = Library:AddDraggableMenu("Visible Keybinds")
+        SettingsHolder.Visible = false
+
+        local Menu = Library.KeybindMenu
+        Menu.VisibilityControl = false
+        Menu.SettingsOpen = false
+        Menu.SettingsFrame = SettingsHolder
+        Menu.SettingsContainer = SettingsContainer
+
+        local SettingsGear = New("TextButton", {
+            AnchorPoint = Vector2.new(1, 0),
+            BackgroundColor3 = "MainColor",
+            Position = UDim2.new(1, -62, 0, 7),
+            Size = UDim2.fromOffset(20, 20),
+            Text = "",
+            Visible = false,
+            ZIndex = Library.KeybindFrame.ZIndex + 1,
+            Parent = Library.KeybindFrame,
+        })
+        table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(0, 5), Parent = SettingsGear }))
+        Library:AddOutline(SettingsGear)
+        local SettingsGearIcon = New("ImageLabel", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundTransparency = 1,
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.35,
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(11, 11),
+            Parent = SettingsGear,
+        })
+        do
+            local GearIcon = Library:GetIcon("settings")
+            if GearIcon then
+                SettingsGearIcon.Image = GearIcon.Url
+                SettingsGearIcon.ImageRectOffset = GearIcon.ImageRectOffset
+                SettingsGearIcon.ImageRectSize = GearIcon.ImageRectSize
+            end
+        end
+        Library:RegisterIconInstance(SettingsGearIcon, "settings")
+
+        function Menu:RefreshSettings()
+            for _, Child in SettingsContainer:GetChildren() do
+                if Child:IsA("GuiObject") and not Child:IsA("UIListLayout") and not Child:IsA("UIPadding") then
+                    Child:Destroy()
+                end
+            end
+
+            for Idx, Option in Options do
+                if Option.Type ~= "KeyPicker" or Option.NoUI == true then
+                    continue
+                end
+
+                local Holder = New("TextButton", {
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, 16),
+                    Text = "",
+                    Parent = SettingsContainer,
+                })
+
+                local Visible = Option.MenuVisible ~= false
+                New("TextLabel", {
+                    AutomaticSize = Enum.AutomaticSize.X,
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(22, 0),
+                    Size = UDim2.fromScale(0, 1),
+                    Text = ("[%s] %s (%s)"):format(
+                        Option.DisplayValue or Option.Value or "None",
+                        Option.Text or tostring(Idx),
+                        Option.Mode or "Toggle"
+                    ),
+                    TextSize = 14,
+                    TextTransparency = Visible and 0 or 0.5,
+                    Parent = Holder,
+                })
+
+                local Checkbox = New("Frame", {
+                    AnchorPoint = Vector2.new(0, 0.5),
+                    BackgroundColor3 = "MainColor",
+                    Position = UDim2.fromScale(0, 0.5),
+                    Size = UDim2.fromOffset(14, 14),
+                    Parent = Holder,
+                })
+                table.insert(
+                    Library.Corners,
+                    New("UICorner", {
+                        CornerRadius = UDim.new(0, Library.CornerRadius / 2),
+                        Parent = Checkbox,
+                    })
+                )
+                New("UIStroke", {
+                    Color = "OutlineColor",
+                    Parent = Checkbox,
+                })
+
+                local CheckImage = New("ImageLabel", {
+                    Image = CheckIcon and CheckIcon.Url or "",
+                    ImageColor3 = "FontColor",
+                    ImageRectOffset = CheckIcon and CheckIcon.ImageRectOffset or Vector2.zero,
+                    ImageRectSize = CheckIcon and CheckIcon.ImageRectSize or Vector2.zero,
+                    ImageTransparency = Visible and 0 or 1,
+                    Position = UDim2.fromOffset(2, 2),
+                    Size = UDim2.new(1, -4, 1, -4),
+                    Parent = Checkbox,
+                })
+                Library:RegisterIconInstance(CheckImage, "check")
+
+                Holder.MouseButton1Click:Connect(function()
+                    local Picker = Options[Idx]
+                    if not (Picker and Picker.Type == "KeyPicker" and Picker.SetMenuVisibility) then
+                        return
+                    end
+
+                    Picker:SetMenuVisibility(Picker.MenuVisible == false)
+                end)
+            end
+        end
+
+        function Menu:SetSettingsOpen(Open: boolean)
+            Open = Open == true
+            if Open and not Menu.VisibilityControl then
+                return
+            end
+
+            Menu.SettingsOpen = Open
+            SettingsHolder.Visible = Open
+
+            if Open then
+                Menu:RefreshSettings()
+
+                local Offset = Library.KeybindFrame.AbsolutePosition + Library.KeybindFrame.AbsoluteSize + Vector2.new(8, 0)
+                SettingsHolder.Position = UDim2.fromOffset(Offset.X, Offset.Y)
+            end
+        end
+
+        function Menu:ToggleSettings()
+            Menu:SetSettingsOpen(not Menu.SettingsOpen)
+        end
+
+        function Menu:SetVisibilityControl(Enabled: boolean)
+            Enabled = Enabled == true
+            Menu.VisibilityControl = Enabled
+            SettingsGear.Visible = Enabled
+
+            if not Enabled then
+                Menu:SetSettingsOpen(false)
+            end
+        end
+
+        SettingsGear.MouseButton1Click:Connect(function()
+            Menu:ToggleSettings()
+        end)
 
         MainFrame = New("TextButton", {
             BackgroundColor3 = function()
@@ -10355,7 +10915,13 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(1, 0, 0, 48),
             Parent = MainFrame,
         })
-        Library:MakeDraggable(MainFrame, TopBar, false, true)
+        local WindowSnapConfig = {
+            Enabled = WindowInfo.Snapping,
+            Distance = WindowInfo.SnapDistance,
+            Margin = WindowInfo.SnapMargin,
+            AvoidCoreGui = WindowInfo.SnapAvoidCoreGui,
+        }
+        Library:MakeDraggable(MainFrame, TopBar, false, true, WindowSnapConfig)
 
         TitleHolder = New("Frame", {
             AutomaticSize = Enum.AutomaticSize.X,
@@ -11002,6 +11568,58 @@ function Library:CreateWindow(WindowInfo)
     function Window:SetAlwaysOnTop(Enabled: boolean)
         WindowInfo.AlwaysOnTop = Enabled == true
         SetAlwaysOnTop(Library.ScreenGui, WindowInfo.AlwaysOnTop)
+    end
+
+    function Window:SetSnapping(Enabled: boolean, Distance: number?, Margin: number?, AvoidCoreGui: boolean?)
+        WindowInfo.Snapping = Enabled == true
+        WindowSnapConfig.Enabled = WindowInfo.Snapping
+
+        if Distance then
+            WindowInfo.SnapDistance = Distance
+            WindowSnapConfig.Distance = Distance
+        end
+
+        if Margin then
+            WindowInfo.SnapMargin = Margin
+            WindowSnapConfig.Margin = Margin
+        end
+
+        if AvoidCoreGui ~= nil then
+            WindowInfo.SnapAvoidCoreGui = AvoidCoreGui == true
+            WindowSnapConfig.AvoidCoreGui = WindowInfo.SnapAvoidCoreGui
+        end
+    end
+
+    function Window:SetAnimations(Animations: { [string]: boolean }?, TabTransitionTime: number?, TabSwipeOffset: number?, TabSwipeFrom: string?)
+        if typeof(Animations) == "table" then
+            WindowInfo.Animations = Animations
+            Library.Animations = Animations
+        end
+
+        if typeof(TabTransitionTime) == "number" then
+            local TransitionInfo = TweenInfo.new(
+                math.max(0, TabTransitionTime or 0.22),
+                Enum.EasingStyle.Quad,
+                Enum.EasingDirection.Out
+            )
+
+            WindowInfo.TabTransitionInfo = TransitionInfo
+            Library.TabTransitionInfo = TransitionInfo
+        end
+
+        if typeof(TabSwipeOffset) == "number" then
+            local ClampedOffset = math.max(1, TabSwipeOffset)
+
+            WindowInfo.TabSwipeOffset = ClampedOffset
+            Library.TabSwipeOffset = ClampedOffset
+        end
+
+        if typeof(TabSwipeFrom) == "string" then
+            local LoweredFrom = string.lower(TabSwipeFrom)
+
+            WindowInfo.TabSwipeFrom = LoweredFrom
+            Library.TabSwipeFrom = LoweredFrom
+        end
     end
 
     function Window:SetCornerRadius(Radius: number)
@@ -11712,6 +12330,8 @@ function Library:CreateWindow(WindowInfo)
             Tooltip = Tooltip,
             TooltipTable = nil,
             Order = Order,
+            Container = TabContainer,
+            Button = TabButton,
             Sides = {
                 TabScroll,
             },
@@ -12622,6 +13242,10 @@ function Library:CreateWindow(WindowInfo)
         end
 
         function Tab:Show()
+            if Library.ActiveTab == Tab then
+                return
+            end
+
             if Library.ActiveTab then
                 Library.ActiveTab:Hide()
             end
@@ -12642,7 +13266,7 @@ function Library:CreateWindow(WindowInfo)
                 Window:ShowTabInfo(Name, Description)
             end
 
-            TabContainer.Visible = true
+            Library:PlayTabAnimation(Tab, true)
             Tab:RefreshSides()
 
             Library.ActiveTab = Tab
@@ -12665,10 +13289,11 @@ function Library:CreateWindow(WindowInfo)
                     ImageTransparency = 0.5,
                 }):Play()
             end
-            TabContainer.Visible = false
 
+            Library:PlayTabAnimation(Tab, false)
             Window:HideTabInfo()
 
+            Library.PreviousTab = Tab
             Library.ActiveTab = nil
         end
 
@@ -12975,6 +13600,10 @@ function Library:CreateWindow(WindowInfo)
         end
 
         function Tab:Show()
+            if Library.ActiveTab == Tab then
+                return
+            end
+
             if Library.ActiveTab then
                 Library.ActiveTab:Hide()
             end
@@ -12990,7 +13619,8 @@ function Library:CreateWindow(WindowInfo)
                     ImageTransparency = 0,
                 }):Play()
             end
-            TabContainer.Visible = true
+
+            Library:PlayTabAnimation(Tab, true)
 
             if Description then
                 Window:ShowTabInfo(Name, Description)
@@ -13018,10 +13648,12 @@ function Library:CreateWindow(WindowInfo)
                     ImageTransparency = 0.5,
                 }):Play()
             end
-            TabContainer.Visible = false
+
+            Library:PlayTabAnimation(Tab, false)
 
             Window:HideTabInfo()
 
+            Library.PreviousTab = Tab
             Library.ActiveTab = nil
         end
 
@@ -13064,6 +13696,7 @@ function Library:CreateWindow(WindowInfo)
         TabButton.MouseButton1Click:Connect(Tab.Show)
 
         Tab.Container = TabContainer
+        Tab.Button = TabButton
         setmetatable(Tab, BaseSection)
 
         Library.Tabs[Name] = Tab
@@ -13570,7 +14203,38 @@ function Library:CreateWindow(WindowInfo)
         return Dialog
     end
 
+    local GuiProperties = { "BackgroundTransparency" }
+    local ImageProperties = { "BackgroundTransparency", "ImageTransparency" }
+    local TextProperties = { "BackgroundTransparency", "TextTransparency" }
+    local StrokeProperties = { "Transparency" }
+
+    local function FadeInstance(Desc, Properties)
+        local Cache = TransparencyCache[Desc]
+        if not Cache then
+            Cache = {}
+            TransparencyCache[Desc] = Cache
+        end
+
+        for _, Prop in Properties do
+            if not Library.Toggled then
+                Cache[Prop] = Desc[Prop]
+            end
+
+            if Cache[Prop] ~= nil and Cache[Prop] ~= 1 then
+                TweenService:Create(Desc, Library.WindowAnimationInfo, {
+                    [Prop] = Library.Toggled and Cache[Prop] or 1,
+                }):Play()
+            end
+        end
+    end
+
+    local Fading = false
+
     function Window:Toggle(Value: boolean?)
+        if Fading then
+            return
+        end
+
         if Library.ActiveLoading then
             if Value == true then
                 return
@@ -13587,29 +14251,70 @@ function Library:CreateWindow(WindowInfo)
             Library.Toggled = not Library.Toggled
         end
 
-        MainFrame.Visible = Library.Toggled
+        if Library.Animations and Library.Animations.ToggleWindow == true then
+            local FadeTime = Library.WindowAnimationInfo.Time
+            Fading = true
+
+            if Library.Toggled then
+                MainFrame.Visible = true
+            end
+
+            if Library.Toggled then
+                FadeInstance(MainFrame, { "BackgroundTransparency" })
+                task.wait(FadeTime / 2)
+            else
+                task.delay(FadeTime / 2, FadeInstance, MainFrame, { "BackgroundTransparency" })
+            end
+
+            for _, Instance in MainFrame:GetDescendants() do
+                if Instance == TopBar then
+                    continue
+                end
+
+                if Instance:IsA("GuiObject") then
+                    local ClassName = Instance.ClassName
+                    if ClassName == "ImageLabel" or ClassName == "ImageButton" then
+                        FadeInstance(Instance, ImageProperties)
+                    elseif ClassName == "TextLabel" or ClassName == "TextBox" or ClassName == "TextButton" then
+                        FadeInstance(Instance, TextProperties)
+                    else
+                        FadeInstance(Instance, GuiProperties)
+                    end
+                elseif Instance.ClassName == "UIStroke" then
+                    FadeInstance(Instance, StrokeProperties)
+                end
+            end
+
+            task.delay(FadeTime, function()
+                MainFrame.Visible = Library.Toggled
+                Fading = false
+            end)
+        else
+            MainFrame.Visible = Library.Toggled
+        end
 
         if WindowInfo.UnlockMouseWhileOpen then
             ModalElement.Modal = Library.Toggled
         end
 
         if Library.Toggled and not Library.IsMobile then
-            local OldMouseIconEnabled = UserInputService.MouseIconEnabled
-            local ShowCursorBinding = Library.ShowCursorBinding
+            Library.OriginalMouseIconEnabled = UserInputService.MouseIconEnabled
 
             pcall(function()
-                RunService:UnbindFromRenderStep(ShowCursorBinding)
+                RunService:UnbindFromRenderStep(Library.ShowCursorBinding)
             end)
-            RunService:BindToRenderStep(ShowCursorBinding, Enum.RenderPriority.Last.Value, function()
+            RunService:BindToRenderStep(Library.ShowCursorBinding, Enum.RenderPriority.Last.Value, function()
                 UserInputService.MouseIconEnabled = not Library.ShowCustomCursor
 
                 Cursor.Position = UDim2.fromOffset(Mouse.X, Mouse.Y)
-                Cursor.Visible = Library.ShowCustomCursor
+                Cursor.Visible = Library.ShowCustomCursor and not CustomImageEnabled
+                CursorV.Visible = Library.ShowCustomCursor and not CustomImageEnabled
+
+                CursorCustomImage.Position = UDim2.fromOffset(Mouse.X, Mouse.Y)
+                CursorCustomImage.Visible = Library.ShowCustomCursor and CustomImageEnabled
 
                 if not (Library.Toggled and ScreenGui and ScreenGui.Parent) then
-                    UserInputService.MouseIconEnabled = OldMouseIconEnabled
-                    Cursor.Visible = false
-                    RunService:UnbindFromRenderStep(ShowCursorBinding)
+                    RestoreMouseIcon()
                 end
             end)
         elseif not Library.Toggled then
