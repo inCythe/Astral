@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix3",
+    BuildId = "virt-fix4",
     BuildDate = "2026-10-11",
     SearchVirtualized = true,
 
@@ -8140,6 +8140,12 @@ do
             Dropdown.Changed = Func
         end
 
+        --// Forward-declared: RecalculateListSize is defined before the
+        --// entries table is filled, and also runs arg-less from
+        --// SetDPIScale (which fires on mobile scale init). Without this,
+        --// #FilteredEntries below reads a nil global and errors. \\--
+        local FilteredEntries = {}
+
         function Dropdown:RecalculateListSize(Count)
             local ItemCount = Count or #FilteredEntries
             --// Defensive defaults: this also runs from SetDPIScale with no
@@ -8174,7 +8180,8 @@ do
 
         local ItemHeight = 21
         local PoolSize = math.max(1, (tonumber(Info.MaxVisibleDropdownItems) or 8) + 2)
-        local FilteredEntries = {}
+        --// FilteredEntries forward-declared above RecalculateListSize; do
+        --// not redeclare here (a second local would shadow it). \\--
 
         local function RecomputeFilteredEntries()
             local Values = Dropdown.Values
