@@ -2510,6 +2510,15 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         RestColorKey = StrokeRegistry.Color
     end
 
+    --// Outer glow: a thick, near-transparent accent stroke behind the crisp
+    --// 1px outline. Layered strokes read as a bloom instead of a flat ring. \\--
+    local GlowStroke = New("UIStroke", {
+        Color = AccentKey,
+        Thickness = 5,
+        Transparency = 1,
+        Parent = Stroke.Parent,
+    })
+
     local BackgroundTarget: GuiObject = Options.BackgroundTarget or Box
     local TintBackground = Options.Background ~= false and BackgroundTarget ~= nil
 
@@ -2545,6 +2554,7 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
     local State = {
         Box = Box,
         Stroke = Stroke,
+        GlowStroke = GlowStroke,
         BackgroundTarget = TintBackground and BackgroundTarget or nil,
         Focused = false,
         ZBoosted = false,
@@ -2560,6 +2570,8 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         FocusedTransparency = FocusedTransparency,
         FocusedThickness = FocusedThickness,
         BackgroundShift = BackgroundShift,
+
+        GlowTransparency = 0.75,
     }
 
     --// Lifts the highlighted field above its siblings while focused so the
@@ -2629,6 +2641,11 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         self.Stroke.Transparency = self.FocusedTransparency
         self.Stroke.Thickness = self.FocusedThickness
 
+        if self.GlowStroke.Parent then
+            self.GlowStroke.Color = self:ResolveAccentColor()
+            self.GlowStroke.Transparency = self.GlowTransparency
+        end
+
         if self.BackgroundTarget then
             self.BackgroundTarget.BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift)
         end
@@ -2649,6 +2666,13 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 Transparency = self.FocusedTransparency,
             }):Play()
 
+            if self.GlowStroke.Parent then
+                TweenService:Create(self.GlowStroke, Library.TweenInfo, {
+                    Color = self:ResolveAccentColor(),
+                    Transparency = self.GlowTransparency,
+                }):Play()
+            end
+
             if self.BackgroundTarget then
                 TweenService:Create(self.BackgroundTarget, Library.TweenInfo, {
                     BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift),
@@ -2661,6 +2685,12 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 Thickness = self.RestThickness,
                 Transparency = self.RestTransparency,
             }):Play()
+
+            if self.GlowStroke.Parent then
+                TweenService:Create(self.GlowStroke, Library.TweenInfo, {
+                    Transparency = 1,
+                }):Play()
+            end
 
             if self.BackgroundTarget then
                 TweenService:Create(self.BackgroundTarget, Library.TweenInfo, {
