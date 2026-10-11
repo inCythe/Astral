@@ -302,6 +302,7 @@ local Library = {
 
     Toggled = false,
     Unloaded = false,
+    IsPicking = false,
 
     Labels = Labels,
     Buttons = Buttons,
@@ -651,6 +652,8 @@ local Templates = {
     },
     ColorPicker = {
         Default = Color3.new(1, 1, 1),
+
+        Resizable = true,
 
         Callback = function() end,
         Changed = function() end,
@@ -3649,6 +3652,11 @@ do
 
         local Picking = false
 
+        local function SetPickingState(State: boolean)
+            Picking = State
+            Library.IsPicking = State
+        end
+
         local SpecialKeys = {
             ["MB1"] = Enum.UserInputType.MouseButton1,
             ["MB2"] = Enum.UserInputType.MouseButton2,
@@ -3790,6 +3798,25 @@ do
             Color = "OutlineColor",
             Parent = Picker,
         })
+
+        Picker.MouseEnter:Connect(function()
+            if ParentObj.Disabled then
+                return
+            end
+
+            TweenService:Create(Picker, Library.TweenInfo, {
+                TextTransparency = 0,
+            }):Play()
+        end)
+        Picker.MouseLeave:Connect(function()
+            if ParentObj.Disabled then
+                return
+            end
+
+            TweenService:Create(Picker, Library.TweenInfo, {
+                TextTransparency = 0.4,
+            }):Play()
+        end)
 
         table.insert(
             Library.Corners,
@@ -3957,7 +3984,20 @@ do
         end
 
         function KeyPicker:Update()
+            local Disabled = ParentObj.Disabled == true
+
+            if Disabled and Picking then
+                SetPickingState(false)
+            end
+
             KeyPicker:Display()
+
+            Picker.Active = not Disabled
+            Picker.TextTransparency = Disabled and 0.8 or 0.4
+
+            if Disabled and KeyPicker.Menu and KeyPicker.Menu.Active then
+                KeyPicker.Menu:Close()
+            end
 
             if Info.NoUI then
                 return
@@ -3983,7 +4023,7 @@ do
                 end
 
                 KeybindsToggle:SetText(("[%s] %s (%s)"):format(KeyPicker.DisplayValue, KeyPicker.Text, KeyPicker.Mode))
-                KeybindsToggle:SetVisibility(true)
+                KeybindsToggle:SetVisibility(KeyPicker.MenuVisible ~= false)
                 KeybindsToggle:Display(State)
             end
         end
@@ -4021,6 +4061,10 @@ do
         end
 
         function KeyPicker:DoClick()
+            if Picking or ParentObj.Disabled then
+                return
+            end
+
             if KeyPicker.Mode == "Press" then
                 if KeyPicker.Toggled and Info.WaitForCallback == true then
                     return
@@ -4076,11 +4120,13 @@ do
                 ModeButtons[Mode]:Select()
             end
 
-            local NewModifiers = ConvertToInputModifiers(KeyPicker.Modifiers)
-            Library:SafeCallback(KeyPicker.ChangedCallback, KeyCode, NewModifiers)
-            Library:SafeCallback(KeyPicker.Changed, KeyCode, NewModifiers)
-
             KeyPicker:Update()
+
+            if not ParentObj.Disabled then
+                local NewModifiers = ConvertToInputModifiers(KeyPicker.Modifiers)
+                Library:SafeCallback(KeyPicker.ChangedCallback, KeyCode, NewModifiers)
+                Library:SafeCallback(KeyPicker.Changed, KeyCode, NewModifiers)
+            end
         end
 
         KeyPicker:SetValue({
@@ -4090,16 +4136,34 @@ do
         })
 
         function KeyPicker:SetText(Text)
+            KeyPicker.Text = Text
             KeybindsToggle:SetText(Text)
             KeyPicker:Update()
+
+            local KeybindMenu = Library.KeybindMenu
+            if KeybindMenu and KeybindMenu.SettingsOpen then
+                KeybindMenu:RefreshSettings()
+            end
+        end
+
+        function KeyPicker:SetMenuVisibility(Visible: boolean)
+            assert(typeof(Visible) == "boolean", "Visible must be a boolean")
+
+            KeyPicker.MenuVisible = Visible
+            KeyPicker:Update()
+
+            local KeybindMenu = Library.KeybindMenu
+            if KeybindMenu and KeybindMenu.SettingsOpen then
+                KeybindMenu:RefreshSettings()
+            end
         end
 
         Picker.MouseButton1Click:Connect(function()
-            if Picking then
+            if Picking or Library.IsPicking or ParentObj.Disabled then
                 return
             end
 
-            Picking = true
+            SetPickingState(true)
 
             Picker.Text = "..."
             Picker.Size = UDim2.fromOffset(29, 18)
@@ -4159,7 +4223,7 @@ do
                 Picker.Size = UDim2.fromOffset(29, 18)
 
                 if GetInput() then
-                    Picking = false
+                    SetPickingState(false)
                     KeyPicker:Update()
                     return
                 end
@@ -4204,7 +4268,7 @@ do
                     until false
 
                     if StopLoop then
-                        Picking = false
+                        SetPickingState(false)
                         KeyPicker:Update()
                         return
                     end
@@ -4228,7 +4292,7 @@ do
             repeat
                 task.wait()
             until not IsInputDown(Input) or UserInputService:GetFocusedTextBox()
-            Picking = false
+            SetPickingState(false)
         end)
         Picker.MouseButton2Click:Connect(MenuTable.Toggle)
 
@@ -4244,6 +4308,7 @@ do
                 or KeyPicker.Value == "Unknown"
                 or KeyPicker.Value == "None"
                 or Picking
+                or Library.IsPicking
                 or UserInputService:GetFocusedTextBox()
             then
                 return
@@ -4477,10 +4542,13 @@ do
             })
         end
 
+        local MapSize = Library.IsMobile and 140 or 200
+        ColorPicker.MapSize = MapSize
+
         local ColorHolder = New("Frame", {
             BackgroundColor3 = "BackgroundColor",
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 200),
+            Size = UDim2.new(1, 0, 0, MapSize),
             Parent = InlinePanel,
         })
         local ColorHolderList = New("UIListLayout", {
@@ -4534,7 +4602,7 @@ do
         })
 
         local HueSelector = New("TextButton", {
-            Size = UDim2.fromOffset(16, 200),
+            Size = UDim2.fromOffset(16, MapSize),
             Text = "",
             Parent = ColorHolder,
         })
@@ -4559,7 +4627,7 @@ do
             TransparencySelector = New("ImageButton", {
                 BackgroundColor3 = Color3.new(1, 1, 1),
                 Image = "",
-                Size = UDim2.fromOffset(16, 200),
+                Size = UDim2.fromOffset(16, MapSize),
                 Parent = ColorHolder,
             })
 
@@ -4651,6 +4719,56 @@ do
 
         Library:AddFocusHighlight(RgbBox)
 
+        if Info.Resizable then
+            local ResizeGrabber = New("TextButton", {
+                BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, 14),
+                Text = "",
+                Parent = InlinePanel,
+            })
+            local ResizeGrabberIcon = New("ImageLabel", {
+                AnchorPoint = Vector2.new(1, 1),
+                BackgroundTransparency = 1,
+                ImageColor3 = "FontColor",
+                ImageTransparency = 0.5,
+                Position = UDim2.fromScale(1, 1),
+                Size = UDim2.fromOffset(12, 12),
+                Parent = ResizeGrabber,
+            })
+            if ResizeIcon then
+                ResizeGrabberIcon.Image = ResizeIcon.Url
+                ResizeGrabberIcon.ImageRectOffset = ResizeIcon.ImageRectOffset
+                ResizeGrabberIcon.ImageRectSize = ResizeIcon.ImageRectSize
+            end
+
+            ResizeGrabber.InputBegan:Connect(function(Input: InputObject)
+                if not IsClickInput(Input) or ParentObj.Disabled then
+                    return
+                end
+
+                local StartY = Mouse.Y
+                local StartSize = ColorPicker.MapSize
+
+                while IsDragInput(Input) do
+                    local NewSize = math.clamp(math.floor(StartSize + (Mouse.Y - StartY) + 0.5), 140, 400)
+
+                    if NewSize ~= ColorPicker.MapSize then
+                        ColorPicker.MapSize = NewSize
+                        ColorHolder.Size = UDim2.new(1, 0, 0, NewSize)
+                        HueSelector.Size = UDim2.fromOffset(16, NewSize)
+
+                        if TransparencySelector then
+                            TransparencySelector.Size = UDim2.fromOffset(16, NewSize)
+                        end
+
+                        ResizeOwner()
+                    end
+
+                    RunService.RenderStepped:Wait()
+                end
+            end)
+        end
+
         local ContextMenu = Library:AddContextMenu(Holder, UDim2.fromOffset(93, 0), function()
             return { Holder.AbsoluteSize.X + 1.5, 0.5 }
         end, 1)
@@ -4666,6 +4784,16 @@ do
                     Parent = ContextMenu.Menu,
                 })
 
+                Button.MouseEnter:Connect(function()
+                    TweenService:Create(Button, Library.TweenInfo, {
+                        BackgroundTransparency = 0.85,
+                    }):Play()
+                end)
+                Button.MouseLeave:Connect(function()
+                    TweenService:Create(Button, Library.TweenInfo, {
+                        BackgroundTransparency = 1,
+                    }):Play()
+                end)
                 Button.MouseButton1Click:Connect(function()
                     Library:SafeCallback(Func)
                     ContextMenu:Close()
@@ -4734,6 +4862,27 @@ do
         function ColorPicker:Update()
             ColorPicker:Display()
 
+            local Disabled = ParentObj.Disabled == true
+            Holder.Active = not Disabled
+
+            if Disabled then
+                if ColorPanelOpen then
+                    CloseColorPanel()
+                end
+
+                if ContextMenu.Active then
+                    ContextMenu:Close()
+                end
+            end
+
+            ColorPicker:RunChanged()
+        end
+
+        function ColorPicker:RunChanged()
+            if ParentObj.Disabled then
+                return
+            end
+
             Library:SafeCallback(ColorPicker.Callback, ColorPicker.Value)
             Library:SafeCallback(ColorPicker.Changed, ColorPicker.Value)
         end
@@ -4760,13 +4909,25 @@ do
             ColorPicker:Update()
         end
 
-        Holder.MouseButton1Click:Connect(function() ColorMenu:Toggle() end)
-        Holder.MouseButton2Click:Connect(ContextMenu.Toggle)
+        Holder.MouseButton1Click:Connect(function()
+            if ParentObj.Disabled then
+                return
+            end
+
+            ColorMenu:Toggle()
+        end)
+        Holder.MouseButton2Click:Connect(function()
+            if ParentObj.Disabled then
+                return
+            end
+
+            ContextMenu.Toggle()
+        end)
 
         Library:AddLongPressAsRightClick(Holder, ContextMenu.Toggle)
 
         SatVipMap.InputBegan:Connect(function(Input: InputObject)
-            while IsDragInput(Input) do
+            while IsDragInput(Input) and not ParentObj.Disabled do
                 local MinX = SatVipMap.AbsolutePosition.X
                 local MaxX = MinX + SatVipMap.AbsoluteSize.X
                 local LocationX = math.clamp(Mouse.X, MinX, MaxX)
@@ -4788,7 +4949,7 @@ do
             end
         end)
         HueSelector.InputBegan:Connect(function(Input: InputObject)
-            while IsDragInput(Input) do
+            while IsDragInput(Input) and not ParentObj.Disabled do
                 local Min = HueSelector.AbsolutePosition.Y
                 local Max = Min + HueSelector.AbsoluteSize.Y
                 local Location = math.clamp(Mouse.Y, Min, Max)
@@ -4805,7 +4966,7 @@ do
         end)
         if TransparencySelector then
             TransparencySelector.InputBegan:Connect(function(Input: InputObject)
-                while IsDragInput(Input) do
+                while IsDragInput(Input) and not ParentObj.Disabled do
                     local Min = TransparencySelector.AbsolutePosition.Y
                     local Max = TransparencySelector.AbsolutePosition.Y + TransparencySelector.AbsoluteSize.Y
                     local Location = math.clamp(Mouse.Y, Min, Max)
@@ -4823,7 +4984,7 @@ do
         end
 
         HueBox.FocusLost:Connect(function(Enter)
-            if not Enter then
+            if not Enter or ParentObj.Disabled then
                 return
             end
 
@@ -4835,7 +4996,7 @@ do
             ColorPicker:Update()
         end)
         RgbBox.FocusLost:Connect(function(Enter)
-            if not Enter then
+            if not Enter or ParentObj.Disabled then
                 return
             end
 
@@ -5099,6 +5260,7 @@ do
                 Info.Text = Params.Text or ""
                 Info.Func = Params.Func or Params.Callback or function() end
                 Info.DoubleClick = Params.DoubleClick
+                Info.Icon = Params.Icon
 
                 Info.Tooltip = Params.Tooltip
                 Info.DisabledTooltip = Params.DisabledTooltip
@@ -5132,6 +5294,7 @@ do
             Text = Info.Text,
             Func = Info.Func,
             DoubleClick = Info.DoubleClick,
+            Icon = Info.Icon,
 
             Tooltip = Info.Tooltip,
             DisabledTooltip = Info.DisabledTooltip,
@@ -5140,6 +5303,12 @@ do
             Risky = Info.Risky,
             Disabled = Info.Disabled,
             Visible = Info.Visible,
+
+            Base = nil,
+            Stroke = nil,
+            Content = nil,
+            Label = nil,
+            IconImage = nil,
 
             Tween = nil,
             Type = "Button",
@@ -5158,15 +5327,45 @@ do
             Parent = Holder,
         })
 
+        local function ApplyButtonIcon(Button, IconName)
+            local Content = Button.Content
+            if not Content then
+                return
+            end
+
+            local ParsedIcon = IconName and Library:GetCustomIcon(IconName) or nil
+            if ParsedIcon then
+                local ColorKey = Button.Risky and "RedColor" or (ParsedIcon.Custom and "WhiteColor" or "FontColor")
+
+                if not Button.IconImage then
+                    Button.IconImage = New("ImageLabel", {
+                        BackgroundTransparency = 1,
+                        ImageColor3 = ColorKey,
+                        LayoutOrder = 0,
+                        Size = UDim2.fromOffset(14, 14),
+                        Parent = Content,
+                    })
+                else
+                    Button.IconImage.ImageColor3 = Library.Scheme[ColorKey]
+                    Library.Registry[Button.IconImage].ImageColor3 = ColorKey
+                end
+
+                Button.IconImage.Image = ParsedIcon.Url
+                Button.IconImage.ImageRectOffset = ParsedIcon.ImageRectOffset
+                Button.IconImage.ImageRectSize = ParsedIcon.ImageRectSize
+                Button.IconImage.ImageTransparency = Button.Disabled and 0.8 or 0.4
+                Button.IconImage.Visible = true
+            elseif Button.IconImage then
+                Button.IconImage.Visible = false
+            end
+        end
+
         local function CreateButton(Button)
             local Base = New("TextButton", {
                 Active = not Button.Disabled,
                 BackgroundColor3 = Button.Disabled and "BackgroundColor" or "MainColor",
                 Size = UDim2.fromScale(1, 1),
-                Text = Button.Text,
-                TextSize = 14,
-                TextTransparency = 0.4,
-                TextTruncate = Enum.TextTruncate.AtEnd,
+                Text = "",
                 Visible = Button.Visible,
                 Parent = Holder,
             })
@@ -5185,6 +5384,46 @@ do
                 })
             )
 
+            local Content = New("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                AutomaticSize = Enum.AutomaticSize.X,
+                BackgroundTransparency = 1,
+                Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromOffset(0, 16),
+                Parent = Base,
+            })
+            New("UIListLayout", {
+                FillDirection = Enum.FillDirection.Horizontal,
+                HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                VerticalAlignment = Enum.VerticalAlignment.Center,
+                Padding = UDim.new(0, 6),
+                Parent = Content,
+            })
+            New("UIPadding", {
+                PaddingLeft = UDim.new(0, 8),
+                PaddingRight = UDim.new(0, 8),
+                Parent = Content,
+            })
+
+            Button.Content = Content
+            Button.Label = New("TextLabel", {
+                AutomaticSize = Enum.AutomaticSize.X,
+                BackgroundTransparency = 1,
+                LayoutOrder = 1,
+                Size = UDim2.fromOffset(0, 16),
+                Text = Button.Text,
+                TextSize = 14,
+                TextTransparency = Button.Disabled and 0.8 or 0.4,
+                Parent = Content,
+            })
+
+            if Button.Risky then
+                Button.Label.TextColor3 = Library.Scheme.RedColor
+                Library.Registry[Button.Label].TextColor3 = "RedColor"
+            end
+
+            ApplyButtonIcon(Button, Button.Icon)
+
             return Base, Stroke
         end
 
@@ -5194,20 +5433,32 @@ do
                     return
                 end
 
-                Button.Tween = TweenService:Create(Button.Base, Library.TweenInfo, {
+                Button.Tween = TweenService:Create(Button.Label, Library.TweenInfo, {
                     TextTransparency = 0,
                 })
                 Button.Tween:Play()
+
+                if Button.IconImage and Button.IconImage.Visible then
+                    TweenService:Create(Button.IconImage, Library.TweenInfo, {
+                        ImageTransparency = 0,
+                    }):Play()
+                end
             end)
             Button.Base.MouseLeave:Connect(function()
                 if Button.Disabled then
                     return
                 end
 
-                Button.Tween = TweenService:Create(Button.Base, Library.TweenInfo, {
+                Button.Tween = TweenService:Create(Button.Label, Library.TweenInfo, {
                     TextTransparency = 0.4,
                 })
                 Button.Tween:Play()
+
+                if Button.IconImage and Button.IconImage.Visible then
+                    TweenService:Create(Button.IconImage, Library.TweenInfo, {
+                        ImageTransparency = 0.4,
+                    }):Play()
+                end
             end)
 
             Button.Base.MouseButton1Click:Connect(function()
@@ -5218,15 +5469,25 @@ do
                 if Button.DoubleClick then
                     Button.Locked = true
 
-                    Button.Base.Text = "Are you sure?"
-                    Button.Base.TextColor3 = Library.Scheme.AccentColor
-                    Library.Registry[Button.Base].TextColor3 = "AccentColor"
+                    local IconWasVisible = false
+                    if Button.IconImage then
+                        IconWasVisible = Button.IconImage.Visible
+                        Button.IconImage.Visible = false
+                    end
+
+                    Button.Label.Text = "Are you sure?"
+                    Button.Label.TextColor3 = Library.Scheme.AccentColor
+                    Library.Registry[Button.Label].TextColor3 = "AccentColor"
 
                     local Clicked = WaitForEvent(Button.Base.MouseButton1Click, 1.5)
 
-                    Button.Base.Text = Button.Text
-                    Button.Base.TextColor3 = Button.Risky and Library.Scheme.RedColor or Library.Scheme.FontColor
-                    Library.Registry[Button.Base].TextColor3 = Button.Risky and "RedColor" or "FontColor"
+                    Button.Label.Text = Button.Text
+                    Button.Label.TextColor3 = Button.Risky and Library.Scheme.RedColor or Library.Scheme.FontColor
+                    Library.Registry[Button.Label].TextColor3 = Button.Risky and "RedColor" or "FontColor"
+
+                    if Button.IconImage then
+                        Button.IconImage.Visible = IconWasVisible
+                    end
 
                     if Clicked then
                         Library:SafeCallback(Button.Func)
@@ -5251,6 +5512,7 @@ do
                 Text = Info.Text,
                 Func = Info.Func,
                 DoubleClick = Info.DoubleClick,
+                Icon = Info.Icon,
 
                 Tooltip = Info.Tooltip,
                 DisabledTooltip = Info.DisabledTooltip,
@@ -5259,6 +5521,12 @@ do
                 Risky = Info.Risky,
                 Disabled = Info.Disabled,
                 Visible = Info.Visible,
+
+                Base = nil,
+                Stroke = nil,
+                Content = nil,
+                Label = nil,
+                IconImage = nil,
 
                 Tween = nil,
                 Type = "SubButton",
@@ -5279,8 +5547,12 @@ do
 
                 SubButton.Base.BackgroundColor3 = SubButton.Disabled and Library.Scheme.BackgroundColor
                     or Library.Scheme.MainColor
-                SubButton.Base.TextTransparency = SubButton.Disabled and 0.8 or 0.4
+                SubButton.Label.TextTransparency = SubButton.Disabled and 0.8 or 0.4
                 SubButton.Stroke.Transparency = SubButton.Disabled and 0.5 or 0
+
+                if SubButton.IconImage and SubButton.IconImage.Visible then
+                    SubButton.IconImage.ImageTransparency = SubButton.Disabled and 0.8 or 0.4
+                end
 
                 Library.Registry[SubButton.Base].BackgroundColor3 = SubButton.Disabled and "BackgroundColor"
                     or "MainColor"
@@ -5306,7 +5578,12 @@ do
 
             function SubButton:SetText(Text: string)
                 SubButton.Text = Text
-                SubButton.Base.Text = Text
+                SubButton.Label.Text = Text
+            end
+
+            function SubButton:SetIcon(Icon: string?)
+                SubButton.Icon = Icon
+                ApplyButtonIcon(SubButton, Icon)
             end
 
             if typeof(SubButton.Tooltip) == "string" or typeof(SubButton.DisabledTooltip) == "string" then
@@ -5316,8 +5593,8 @@ do
             end
 
             if SubButton.Risky then
-                SubButton.Base.TextColor3 = Library.Scheme.RedColor
-                Library.Registry[SubButton.Base].TextColor3 = "RedColor"
+                SubButton.Label.TextColor3 = Library.Scheme.RedColor
+                Library.Registry[SubButton.Label].TextColor3 = "RedColor"
             end
 
             SubButton:UpdateColors()
@@ -5340,8 +5617,12 @@ do
 
             Button.Base.BackgroundColor3 = Button.Disabled and Library.Scheme.BackgroundColor
                 or Library.Scheme.MainColor
-            Button.Base.TextTransparency = Button.Disabled and 0.8 or 0.4
+            Button.Label.TextTransparency = Button.Disabled and 0.8 or 0.4
             Button.Stroke.Transparency = Button.Disabled and 0.5 or 0
+
+            if Button.IconImage and Button.IconImage.Visible then
+                Button.IconImage.ImageTransparency = Button.Disabled and 0.8 or 0.4
+            end
 
             Library.Registry[Button.Base].BackgroundColor3 = Button.Disabled and "BackgroundColor" or "MainColor"
         end
@@ -5366,7 +5647,12 @@ do
 
         function Button:SetText(Text: string)
             Button.Text = Text
-            Button.Base.Text = Text
+            Button.Label.Text = Text
+        end
+
+        function Button:SetIcon(Icon: string?)
+            Button.Icon = Icon
+            ApplyButtonIcon(Button, Icon)
         end
 
         if typeof(Button.Tooltip) == "string" or typeof(Button.DisabledTooltip) == "string" then
@@ -5375,8 +5661,8 @@ do
         end
 
         if Button.Risky then
-            Button.Base.TextColor3 = Library.Scheme.RedColor
-            Library.Registry[Button.Base].TextColor3 = "RedColor"
+            Button.Label.TextColor3 = Library.Scheme.RedColor
+            Library.Registry[Button.Label].TextColor3 = "RedColor"
         end
 
         Button:UpdateColors()
@@ -5675,6 +5961,8 @@ do
 
             for _, Addon in Toggle.Addons do
                 if Addon.Type == "KeyPicker" and Addon.SyncToggleState then
+                    Addon:Update()
+                elseif Addon.Type == "ColorPicker" and Addon.Update then
                     Addon:Update()
                 end
             end
@@ -11894,6 +12182,7 @@ function Library:CreateWindow(WindowInfo)
                 Size = UDim2.new(0, 63, 1, 0),
                 Text = "Execute",
                 TextSize = 14,
+                TextTransparency = 0.4,
                 Parent = Holder,
             })
             New("UIStroke", {
@@ -11908,6 +12197,16 @@ function Library:CreateWindow(WindowInfo)
                 })
             )
 
+            Button.MouseEnter:Connect(function()
+                TweenService:Create(Button, Library.TweenInfo, {
+                    TextTransparency = 0,
+                }):Play()
+            end)
+            Button.MouseLeave:Connect(function()
+                TweenService:Create(Button, Library.TweenInfo, {
+                    TextTransparency = 0.4,
+                }):Play()
+            end)
             Button.InputBegan:Connect(function(Input)
                 if not IsClickInput(Input) then
                     return
@@ -12258,6 +12557,7 @@ function Library:CreateWindow(WindowInfo)
         local Dialog = {
             Elements = {},
             Container = DialogContainer,
+            OutsideClickDismiss = Info.OutsideClickDismiss,
         }
 
         function Dialog:Resize()
@@ -13573,6 +13873,28 @@ function Library:CreateWindow(WindowInfo)
 
     Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input: InputObject)
         if Library.Unloaded then
+            return
+        end
+
+        if Input.KeyCode == Enum.KeyCode.Escape then
+            -- Releasing focus from a text input takes priority and never toggles the window --
+            local FocusedBox = UserInputService:GetFocusedTextBox()
+            if FocusedBox then
+                FocusedBox:ReleaseFocus()
+                return
+            end
+
+            -- Dismiss the topmost dialog before closing any open menu --
+            if Library.ActiveDialog and Library.ActiveDialog.OutsideClickDismiss ~= false then
+                Library.ActiveDialog:Dismiss()
+                return
+            end
+
+            if CurrentMenu then
+                CurrentMenu:Close()
+                return
+            end
+
             return
         end
 
