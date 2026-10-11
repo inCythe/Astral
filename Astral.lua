@@ -337,6 +337,7 @@ local Library = {
         OutlineColor = Color3.fromRGB(36, 36, 42),
         FontColor = Color3.new(1, 1, 1),
         Font = Font.fromEnum(Enum.Font.GothamMedium),
+        BackgroundImage = "",
 
         RedColor = Color3.fromRGB(255, 64, 64),
         DestructiveColor = Color3.fromRGB(225, 60, 60),
@@ -1101,7 +1102,10 @@ local function FilterBox(Box, Search, ForceVisible: boolean?)
 
     if Box.SubSections then
         for _, SubSection in Box.SubSections do
-            local SubVisible, SubScore = FilterBox(SubSection, Search, ForceVisible)
+            local SubSectionMatches = ForceVisible or TryFuzzyMatch(SubSection.Name, Search)
+            BestScore = math.max(BestScore, FuzzyMatchScore(SubSection.Name, Search))
+
+            local SubVisible, SubScore = FilterBox(SubSection, Search, SubSectionMatches)
             VisibleElements += SubVisible
             if SubScore > BestScore then
                 BestScore = SubScore
@@ -9768,6 +9772,17 @@ function Library:SetFont(FontFace)
     Library:UpdateColorsUsingRegistry()
 end
 
+function Library:SetBackgroundImage(Image: string)
+    assert(typeof(Image) == "string", "Expected string got " .. typeof(Image))
+
+    Library.Scheme.BackgroundImage = Image
+    if Library.Window and Library.Window.SetBackgroundImage then
+        Library.Window:SetBackgroundImage(Image)
+    end
+
+    Library:UpdateColorsUsingRegistry()
+end
+
 function Library:SetNotifySide(Side: string)
     Library.NotifySide = Side
 
@@ -10314,27 +10329,26 @@ function Library:CreateWindow(WindowInfo)
             Parent = MainFrame,
         })
 
-        if WindowInfo.BackgroundImage then
-            BackgroundImage = New("ImageLabel", {
-                Image = WindowInfo.BackgroundImage,
-                Position = UDim2.fromScale(0, 0),
-                Size = UDim2.fromScale(1, 1),
-                ScaleType = Enum.ScaleType.Stretch,
+        BackgroundImage = New("ImageLabel", {
+            Image = WindowInfo.BackgroundImage or "",
+            Position = UDim2.fromScale(0, 0),
+            Size = UDim2.fromScale(1, 1),
+            ScaleType = Enum.ScaleType.Stretch,
 
-                ZIndex = MainFrame.ZIndex + 1,
-                BackgroundTransparency = 1,
-                ImageTransparency = 0.75,
-                Parent = MainFrame,
+            ZIndex = MainFrame.ZIndex + 1,
+            BackgroundTransparency = 1,
+            ImageTransparency = 0.75,
+            Visible = WindowInfo.BackgroundImage ~= nil and WindowInfo.BackgroundImage ~= "",
+            Parent = MainFrame,
+        })
+
+        table.insert(
+            Library.Corners,
+            New("UICorner", {
+                CornerRadius = UDim.new(0, WindowInfo.CornerRadius),
+                Parent = BackgroundImage,
             })
-
-            table.insert(
-                Library.Corners,
-                New("UICorner", {
-                    CornerRadius = UDim.new(0, WindowInfo.CornerRadius),
-                    Parent = BackgroundImage,
-                })
-            )
-        end
+        )
 
         local TopBar = New("Frame", {
             BackgroundTransparency = 1,
@@ -10917,11 +10931,10 @@ function Library:CreateWindow(WindowInfo)
         WindowTitle.Size = UDim2.new(0, X, 1, 0)
     end
 
-    if WindowInfo.BackgroundImage then
-        function Window:SetBackgroundImage(Image: string)
-            assert(typeof(Image) == "string", "Expected string for Image got: " .. typeof(Image))
+    function Window:SetBackgroundImage(Image: string)
+        assert(typeof(Image) == "string", "Expected string for Image got: " .. typeof(Image))
 
-            local ValidImage = false
+        local ValidImage = false
 
             if typeof(Image) == "string" then
                 local BackgroundIcon = Library:GetCustomIcon(Image)
@@ -10974,9 +10987,10 @@ function Library:CreateWindow(WindowInfo)
                 BackgroundImage.ImageRectSize = Vector2.zero
             end
 
+            BackgroundImage.Visible = ValidImage
+
             WindowInfo.BackgroundImage = Image
         end
-    end
 
     function Window:SetFooter(footer: string)
         assert(typeof(footer) == "string", "Expected string for footer got: " .. typeof(footer))
