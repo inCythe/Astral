@@ -247,8 +247,8 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix4",
-    BuildDate = "2026-10-11",
+    BuildId = "virt-fix5",
+    BuildDate = "2026-10-13",
     SearchVirtualized = true,
 
     LocalPlayer = LocalPlayer,
@@ -933,12 +933,27 @@ local function NormalizeSearch(Search: string): string
     return (Search:gsub("%s+", ""))
 end
 
+--// Lowered-text cache: every keystroke re-matches every element name, so
+--// cache :lower() per string instead of reallocating it N times per
+--// rebuild. Weak keys so renamed elements don't pin memory. \\--
+local LowerTextCache = setmetatable({}, { __mode = "kv" })
+
+local function LowerCached(Text: string): string
+    local Cached = LowerTextCache[Text]
+    if Cached then
+        return Cached
+    end
+    local Lowered = Text:lower()
+    LowerTextCache[Text] = Lowered
+    return Lowered
+end
+
 local function TryFuzzyMatch(Text: any, Search: string): (boolean, number)
     if typeof(Text) ~= "string" or Text == "" then
         return false, 0
     end
 
-    return FuzzyScore(Text:lower(), Search)
+    return FuzzyScore(LowerCached(Text), Search)
 end
 
 local function FuzzyMatchScore(Text: any, Search: string): number
@@ -946,7 +961,7 @@ local function FuzzyMatchScore(Text: any, Search: string): number
         return 0
     end
 
-    local Normalized = NormalizeSearch(Text:lower())
+    local Normalized = NormalizeSearch(LowerCached(Text))
     local Matched, Score = FuzzyScore(Normalized, Search)
     if not Matched then
         return 0
@@ -2514,23 +2529,8 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         RestColorKey = StrokeRegistry.Color
     end
 
-    --// Outer glow: two stacked, near-transparent accent strokes behind the
-    --// crisp 1px outline. Stepped falloff fakes a soft bloom since strokes
-    --// are hard-edged by nature. \\--
-    local GlowTweenInfo = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
-    local GlowInner = New("UIStroke", {
-        Color = AccentKey,
-        Thickness = 3,
-        Transparency = 1,
-        Parent = Stroke.Parent,
-    })
-    local GlowOuter = New("UIStroke", {
-        Color = AccentKey,
-        Thickness = 7,
-        Transparency = 1,
-        Parent = Stroke.Parent,
-    })
+    --// Single thin solid accent ring on focus. No layered glow: extra
+    --// strokes cost two instances + two tweens per field and read muddy. \\--
 
     local BackgroundTarget: GuiObject = Options.BackgroundTarget or Box
     local TintBackground = Options.Background ~= false and BackgroundTarget ~= nil
@@ -2554,7 +2554,7 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         FocusedTransparency = Options.FocusedTransparency
     end
 
-    local FocusedThickness = RestThickness + 1
+    local FocusedThickness = RestThickness
     if Options.FocusedThickness ~= nil then
         FocusedThickness = Options.FocusedThickness
     end
@@ -2567,9 +2567,6 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
     local State = {
         Box = Box,
         Stroke = Stroke,
-        GlowInner = GlowInner,
-        GlowOuter = GlowOuter,
-        GlowTweenInfo = GlowTweenInfo,
         BackgroundTarget = TintBackground and BackgroundTarget or nil,
         Focused = false,
         ZBoosted = false,
@@ -2585,9 +2582,6 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         FocusedTransparency = FocusedTransparency,
         FocusedThickness = FocusedThickness,
         BackgroundShift = BackgroundShift,
-
-        GlowInnerTransparency = 0.82,
-        GlowOuterTransparency = 0.93,
     }
 
     --// Lifts the highlighted field above its siblings while focused so the
@@ -2657,18 +2651,6 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         self.Stroke.Transparency = self.FocusedTransparency
         self.Stroke.Thickness = self.FocusedThickness
 
-        for _, Glow in { self.GlowInner, self.GlowOuter } do
-            if Glow.Parent then
-                Glow.Color = self:ResolveAccentColor()
-            end
-        end
-        if self.GlowInner.Parent then
-            self.GlowInner.Transparency = self.GlowInnerTransparency
-        end
-        if self.GlowOuter.Parent then
-            self.GlowOuter.Transparency = self.GlowOuterTransparency
-        end
-
         if self.BackgroundTarget then
             self.BackgroundTarget.BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift)
         end
@@ -2689,20 +2671,6 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 Transparency = self.FocusedTransparency,
             }):Play()
 
-            local Accent = self:ResolveAccentColor()
-            if self.GlowInner.Parent then
-                TweenService:Create(self.GlowInner, self.GlowTweenInfo, {
-                    Color = Accent,
-                    Transparency = self.GlowInnerTransparency,
-                }):Play()
-            end
-            if self.GlowOuter.Parent then
-                TweenService:Create(self.GlowOuter, self.GlowTweenInfo, {
-                    Color = Accent,
-                    Transparency = self.GlowOuterTransparency,
-                }):Play()
-            end
-
             if self.BackgroundTarget then
                 TweenService:Create(self.BackgroundTarget, Library.TweenInfo, {
                     BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift),
@@ -2715,17 +2683,6 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
                 Thickness = self.RestThickness,
                 Transparency = self.RestTransparency,
             }):Play()
-
-            if self.GlowInner.Parent then
-                TweenService:Create(self.GlowInner, self.GlowTweenInfo, {
-                    Transparency = 1,
-                }):Play()
-            end
-            if self.GlowOuter.Parent then
-                TweenService:Create(self.GlowOuter, self.GlowTweenInfo, {
-                    Transparency = 1,
-                }):Play()
-            end
 
             if self.BackgroundTarget then
                 TweenService:Create(self.BackgroundTarget, Library.TweenInfo, {
@@ -15054,10 +15011,10 @@ function Library:CreateWindow(WindowInfo)
 
         --// Wraps the query's match in accent + bold. The query is spaceless
         --// (normalized), so match against spaceless text and map back. \\--
-        local function HighlightMatch(Text: string, Query: string): string
+        local function HighlightMatch(Text: string, Query: string, Lower: string?): string
             --// Fast path: plain substring (covers single-word queries, the
             --// common case) without building the spaceless map. \\--
-            local Lower = Text:lower()
+            Lower = Lower or LowerCached(Text)
             local PlainS, PlainE = Lower:find(Query, 1, true)
             if PlainS then
                 local HexFast = RebuildAccentHex or string.format("#%s", Library.Scheme.AccentColor:ToHex())
@@ -15257,12 +15214,12 @@ function Library:CreateWindow(WindowInfo)
         }
 
         local MaxDepthLines = 6
-        local Overscan = 12
+        local Overscan = 8
         local LastRenderFirst, LastRenderLast, LastRenderTotal = nil, nil, nil
 
-        local function BuildDisplayText(TextValue: string, Highlight: string?): string
+        local function BuildDisplayText(TextValue: string, Highlight: string?, Lower: string?): string
             if Highlight and Highlight ~= "" then
-                return HighlightMatch(TextValue, Highlight)
+                return HighlightMatch(TextValue, Highlight, Lower)
             end
             return EscapeRichText(TextValue)
         end
@@ -15422,6 +15379,9 @@ function Library:CreateWindow(WindowInfo)
             Lbl.Position = UDim2.new(0, TextX, 0, 0)
             Lbl.Size = UDim2.new(1, -(TextX + (BadgeW > 0 and BadgeW + 8 or 0)), 1, 0)
             Lbl.Text = Cfg.DisplayText or Cfg.Text
+            --// Plain rows skip the RichText parser entirely; only match
+            --// highlights pay for tag parsing. \\--
+            Lbl.RichText = Cfg.HasHighlight == true
             Lbl.FontFace = Cfg.IsTab and RebuildTabFont or RebuildRowFont
             Lbl.TextSize = Cfg.IsTab and 13 or 12
             Lbl.TextTransparency = Cfg.IsTab and 0 or (Cfg.IsElement and 0.35 or 0.1)
@@ -15699,7 +15659,8 @@ function Library:CreateWindow(WindowInfo)
                     ColorFn = function() return Library:GetAccentShade(1) end
                 end
 
-                Cfg.DisplayText = BuildDisplayText(Cfg.Text, QueryHighlight)
+                Cfg.DisplayText = BuildDisplayText(Cfg.Text, QueryHighlight, LowerCached(Cfg.Text))
+                Cfg.HasHighlight = QueryHighlight ~= nil
                 Cfg.BadgeText = BadgeText
                 Cfg.BadgeShadeStep = BadgeShadeStep
                 Cfg.RowColorFn = ColorFn
