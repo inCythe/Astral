@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix5",
+    BuildId = "virt-fix6",
     BuildDate = "2026-10-13",
     SearchVirtualized = true,
 
@@ -2554,7 +2554,10 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
         FocusedTransparency = Options.FocusedTransparency
     end
 
-    local FocusedThickness = RestThickness
+    --// One shared ring width for every field: searchbar, textboxes,
+    --// dropdown search, pickers. Fixed constant so focus looks identical
+    --// everywhere regardless of each stroke's resting thickness. \\--
+    local FocusedThickness = 1
     if Options.FocusedThickness ~= nil then
         FocusedThickness = Options.FocusedThickness
     end
@@ -14897,7 +14900,7 @@ function Library:CreateWindow(WindowInfo)
                     })
                     local FlashStroke = New("UIStroke", {
                         Color = Library.Scheme and Library.Scheme.AccentColor or Color3.fromRGB(100, 180, 255),
-                        Thickness = 2,
+                        Thickness = 1,
                         Transparency = 0,
                         Parent = FlashOutline,
                     })

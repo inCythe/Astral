@@ -3097,7 +3097,7 @@ Library:AddFocusHighlight(SomeTextBox, SomeStroke, {
     BackgroundShift = 6,          -- brightness shift applied to the background
     Thickness   = nil,            -- resting stroke thickness (defaults to the stroke's own)
     Transparency = nil,           -- resting stroke transparency
-    FocusedThickness = nil,       -- defaults to `Thickness` (same thin ring, just recolored)
+    FocusedThickness = nil,       -- fixed 1px everywhere so all fields match
     FocusedTransparency = nil,    -- defaults to 0
     Enabled     = true,           -- set false to skip attaching entirely
 })
