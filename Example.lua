@@ -41,7 +41,7 @@ print("[Astral] loaded build:", AstralBuild)
 local Window = Library:CreateWindow({
     Title            = "Astral UI — Reference",
     Icon             = "AstralIcon",
-    Footer           = "Quick Reference v2.0 • " .. AstralBuild,
+    Footer           = "Quick Reference",
     Size             = UDim2.fromOffset(940, 620),
     Center           = true,
     Resizable        = true,

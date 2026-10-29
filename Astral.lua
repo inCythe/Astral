@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix7",
+    BuildId = "virt-fix8",
     BuildDate = "2026-10-29",
     SearchVirtualized = true,
 
@@ -593,8 +593,8 @@ local Templates = {
 
         Prefix = "",
         Suffix = "",
-        Editable = false,
-        EditableStyle = "Pencil",
+        Editable = true,
+        EditableStyle = "ValueBox",
 
         Callback = function() end,
         Changed = function() end,
@@ -2492,6 +2492,225 @@ function Library:MakeLine(Frame: GuiObject, Info)
     return Line
 end
 
+--// Custom scrollbars: native ones are always-on and theme-clashing, so every
+--// ScrollingFrame gets a thin floating thumb instead. It reveals on scroll
+--// (or hover), fades out after a short idle, and can be dragged.
+--// Parented to the ScreenGui: children of a ScrollingFrame live in canvas
+--// space, which would make the thumb scroll with the content. \\--
+local CustomScrollbars = {}
+
+local function ScrollbarAncestorsVisible(Scroll: ScrollingFrame): boolean
+    local Current: Instance? = Scroll
+    while Current and not Current:IsA("ScreenGui") do
+        if Current:IsA("GuiObject") and not Current.Visible then
+            return false
+        end
+        Current = Current.Parent
+    end
+    return true
+end
+
+function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
+    if not Scroll or not Scroll:IsA("ScrollingFrame") then
+        return
+    end
+
+    for _, Existing in ipairs(CustomScrollbars) do
+        if Existing.Scroll == Scroll then
+            return
+        end
+    end
+
+    local Screen = Scroll:FindFirstAncestorOfClass("ScreenGui")
+    if not Screen then
+        return
+    end
+
+    Scroll.ScrollBarThickness = 0
+    Scroll.ScrollBarImageTransparency = 1
+
+    local Thumb = New("Frame", {
+        Name = "AstralScrollbar",
+        BackgroundColor3 = "FontColor",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.fromOffset(4, 0),
+        Visible = false,
+        ZIndex = (Scroll.ZIndex or 1) + 30,
+        Parent = Screen,
+    })
+    Library:AddToRegistry(Thumb, { BackgroundColor3 = "FontColor" })
+    New("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = Thumb,
+    })
+
+    local State = {
+        Scroll = Scroll,
+        Thumb = Thumb,
+        Hover = false,
+        Dragging = false,
+        LastCanvasY = Scroll.CanvasPosition.Y,
+        IdleAt = os.clock(),
+        HideToken = 0,
+        Shown = false,
+    }
+
+    local function Reveal()
+        State.IdleAt = os.clock()
+        State.HideToken += 1
+        if not State.Shown then
+            State.Shown = true
+            Thumb.Visible = true
+            Thumb.BackgroundTransparency = 1
+        end
+        --// Only fade in when actually faded: scrolling fires this every
+        --// frame, and spawning a tween per frame would be wasteful. \\--
+        if Thumb.BackgroundTransparency > 0.5 then
+            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.35 }):Play()
+        end
+    end
+
+    local function Conceal()
+        if State.Hover or State.Dragging then
+            return
+        end
+
+        State.IdleAt = os.clock()
+        State.HideToken += 1
+        local Token = State.HideToken
+        TweenService:Create(Thumb, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+        task.delay(0.32, function()
+            if Token == State.HideToken and not State.Hover and not State.Dragging then
+                Thumb.Visible = false
+                State.Shown = false
+            end
+        end)
+    end
+
+    Thumb.MouseEnter:Connect(function()
+        State.Hover = true
+        Reveal()
+    end)
+    Thumb.MouseLeave:Connect(function()
+        State.Hover = false
+        State.IdleAt = os.clock()
+    end)
+
+    Thumb.InputBegan:Connect(function(Input: InputObject)
+        local IsTouch = Input.UserInputType == Enum.UserInputType.Touch
+        if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and not IsTouch then
+            return
+        end
+
+        State.Dragging = true
+        State.Hover = true
+        Reveal()
+
+        local StartY = Input.Position.Y
+        local StartCanvas = Scroll.CanvasPosition.Y
+        local ChangedConnection, EndedConnection
+
+        ChangedConnection = UserInputService.InputChanged:Connect(function(MoveInput: InputObject)
+            local Moving = MoveInput.UserInputType == Enum.UserInputType.MouseMovement
+                or MoveInput.UserInputType == Enum.UserInputType.Touch
+            if not Moving then
+                return
+            end
+
+            local Track = Scroll.AbsoluteSize.Y - 4 - Thumb.AbsoluteSize.Y
+            if Track <= 0 then
+                return
+            end
+
+            local MaxScroll = math.max(Scroll.AbsoluteCanvasSize.Y - Scroll.AbsoluteSize.Y, 1)
+            local Scale = Library.DPIScale or 1
+            local Delta = (MoveInput.Position.Y - StartY) / Track * (MaxScroll / Scale)
+            Scroll.CanvasPosition = Vector2.new(
+                Scroll.CanvasPosition.X,
+                math.clamp(StartCanvas + Delta, 0, MaxScroll / Scale)
+            )
+            State.IdleAt = os.clock()
+        end)
+
+        EndedConnection = UserInputService.InputEnded:Connect(function(EndInput: InputObject)
+            local Released = EndInput.UserInputType == Enum.UserInputType.MouseButton1
+                or EndInput.UserInputType == Enum.UserInputType.Touch
+            if not Released then
+                return
+            end
+
+            State.Dragging = false
+            State.Hover = false
+            State.IdleAt = os.clock()
+            if ChangedConnection then
+                ChangedConnection:Disconnect()
+            end
+            if EndedConnection then
+                EndedConnection:Disconnect()
+            end
+        end)
+    end)
+
+    State.Reveal = Reveal
+    State.Conceal = Conceal
+
+    table.insert(CustomScrollbars, State)
+end
+
+do
+    local function SyncScrollbar(State)
+        local Scroll, Thumb = State.Scroll, State.Thumb
+        if not Scroll.Parent then
+            Thumb:Destroy()
+            return false
+        end
+
+        local AbsPos, AbsSize = Scroll.AbsolutePosition, Scroll.AbsoluteSize
+        local Canvas = Scroll.AbsoluteCanvasSize
+
+        if not ScrollbarAncestorsVisible(Scroll) or AbsSize.Y < 8 or Canvas.Y <= AbsSize.Y + 1 then
+            if Thumb.Visible then
+                Thumb.Visible = false
+                State.Shown = false
+            end
+            return true
+        end
+
+        local Track = AbsSize.Y - 4
+        local ThumbHeight = math.clamp(AbsSize.Y * (AbsSize.Y / Canvas.Y), 24, Track)
+        local MaxScroll = math.max(Canvas.Y - AbsSize.Y, 1)
+        local Progress = math.clamp(((Scroll.CanvasPosition.Y * (Library.DPIScale or 1)) / MaxScroll), 0, 1)
+
+        Thumb.Size = UDim2.fromOffset(4, ThumbHeight)
+        Thumb.Position = UDim2.fromOffset(
+            AbsPos.X + AbsSize.X - 6,
+            AbsPos.Y + 2 + Progress * (Track - ThumbHeight)
+        )
+        Thumb.ZIndex = (Scroll.ZIndex or 1) + 30
+
+        if Scroll.CanvasPosition.Y ~= State.LastCanvasY then
+            State.LastCanvasY = Scroll.CanvasPosition.Y
+            State.Reveal()
+        end
+
+        if State.Shown and os.clock() - State.IdleAt > 1.1 then
+            State.Conceal()
+        end
+
+        return true
+    end
+
+    Library:GiveSignal(RunService.Heartbeat:Connect(function()
+        for Index = #CustomScrollbars, 1, -1 do
+            local State = CustomScrollbars[Index]
+            if not SyncScrollbar(State) then
+                table.remove(CustomScrollbars, Index)
+            end
+        end
+    end))
+end
+
 function Library:AddOutline(Frame: GuiObject)
     local OutlineStroke = New("UIStroke", {
         Color = "OutlineColor",
@@ -3722,6 +3941,7 @@ function Library:AddContextMenu(
             ZIndex = BaseZIndex,
             Parent = ParentGui,
         })
+        Library:AddCustomScrollbar(Menu)
     else
         Menu = New("Frame", {
             BackgroundColor3 = "BackgroundColor",
@@ -6903,7 +7123,7 @@ do
             Rounding = Info.Rounding,
             HideMax = Info.HideMax,
             Editable = Info.Editable,
-            EditableStyle = Info.EditableStyle or "Pencil",
+            EditableStyle = Info.EditableStyle or "ValueBox",
 
             Tooltip = Info.Tooltip,
             DisabledTooltip = Info.DisabledTooltip,
@@ -7823,6 +8043,9 @@ do
             ImageTransparency = 0.5,
             Position = UDim2.fromScale(1, 0.5),
             Size = UDim2.fromOffset(16, 16),
+            --// Above the search box: opening the dropdown swaps in a TextBox
+            --// that otherwise draws over the chevron on narrow widths. \\--
+            ZIndex = (DisplayContainer.ZIndex or 1) + 10,
             Parent = DisplayContainer,
         })
         Library:RegisterIconInstance(ArrowImage, "chevron-up")
@@ -7972,6 +8195,7 @@ do
             Parent = Holder,
         })
         Library:AddToRegistry(InlineList, { ScrollBarImageColor3 = "OutlineColor" })
+        Library:AddCustomScrollbar(InlineList)
         New("UIStroke", { Color = "OutlineColor", Parent = InlineList })
         if Library.CornerRadiusDropdown == true then
             table.insert(Library.Corners, New("UICorner", {
@@ -8005,6 +8229,7 @@ do
             DropdownOpen = Active
             MenuTable.Active = Active
             InlineList.Visible = Active
+            ArrowImage.Visible = true
             ArrowImage.ImageTransparency = Active and 0 or 0.5
             ArrowImage.Rotation = Active and 180 or 0
             if SearchBox then
@@ -11365,6 +11590,7 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.new(1, 0, 1, -DiscordBtnHeight),
             Parent = Sidebar,
         })
+        Library:AddCustomScrollbar(Tabs)
         local TabsLayout = New("UIListLayout", {
             Padding = UDim.new(0, 2),
             Parent = Tabs,
@@ -11753,14 +11979,14 @@ function Library:CreateWindow(WindowInfo)
 
                 Button.IconSlot.AnchorPoint = Vector2.new(0.5, 0.5)
                 Button.IconSlot.Position = UDim2.fromScale(0.5, 0.5)
-                Button.IconSlot.Size = UDim2.new(0, 20, 1, 0)
+                Button.IconSlot.Size = UDim2.new(0, 18, 1, 0)
                 Button.IconSlot.SizeConstraint = Enum.SizeConstraint.RelativeYY
                 Button.Padding.PaddingLeft = UDim.new(0, 4)
             else
 
                 Button.IconSlot.AnchorPoint = Vector2.new(0, 0.5)
                 Button.IconSlot.Position = UDim2.new(0, 0, 0.5, 0)
-                Button.IconSlot.Size = UDim2.new(0, 20, 1, 0)
+                Button.IconSlot.Size = UDim2.new(0, 18, 1, 0)
                 Button.IconSlot.SizeConstraint = Enum.SizeConstraint.RelativeYY
                 Button.Padding.PaddingLeft = UDim.new(0, 20)
             end
@@ -12151,7 +12377,7 @@ function Library:CreateWindow(WindowInfo)
                 AnchorPoint = IsCompact and Vector2.new(0.5, 0.5) or Vector2.new(0, 0.5),
                 BackgroundTransparency = 1,
                 Position = IsCompact and UDim2.fromScale(0.5, 0.5) or UDim2.new(0, 0, 0.5, 0),
-                Size = UDim2.new(0, 20, 1, 0),
+                Size = UDim2.new(0, 18, 1, 0),
                 SizeConstraint = Enum.SizeConstraint.RelativeYY,
                 Parent = TabButton,
             })
@@ -12187,8 +12413,8 @@ function Library:CreateWindow(WindowInfo)
             TabLabel = New("TextLabel", {
                 AnchorPoint = Vector2.new(0, 0.5),
                 BackgroundTransparency = 1,
-                Position = UDim2.new(0, 28, 0.5, 0),
-                Size = UDim2.new(1, -28, 0, 18),
+                Position = UDim2.new(0, 26, 0.5, 0),
+                Size = UDim2.new(1, -26, 0, 18),
                 Text = Name,
                 TextSize = 14,
                 TextTransparency = 0.5,
@@ -12227,6 +12453,7 @@ function Library:CreateWindow(WindowInfo)
                 Size = UDim2.fromScale(1, 1),
                 Parent = TabContainer,
             })
+            Library:AddCustomScrollbar(TabScroll)
             local TabScrollList = New("UIListLayout", {
                 Padding = UDim.new(0, 2),
                 SortOrder = Enum.SortOrder.LayoutOrder,
@@ -12360,6 +12587,7 @@ function Library:CreateWindow(WindowInfo)
                 ScrollingDirection = Enum.ScrollingDirection.Y,
                 Parent = WarningBox,
             })
+            Library:AddCustomScrollbar(WarningBoxScrollingFrame)
             New("UIPadding", {
                 PaddingBottom = UDim.new(0, 4),
                 PaddingLeft = UDim.new(0, 6),
@@ -13475,7 +13703,7 @@ function Library:CreateWindow(WindowInfo)
                 AnchorPoint = Vector2.new(0, 0.5),
                 BackgroundTransparency = 1,
                 Position = UDim2.new(0, 0, 0.5, 0),
-                Size = UDim2.new(0, 20, 1, 0),
+                Size = UDim2.new(0, 18, 1, 0),
                 SizeConstraint = Enum.SizeConstraint.RelativeYY,
                 Parent = TabButton,
             })
@@ -13491,7 +13719,7 @@ function Library:CreateWindow(WindowInfo)
                 AnchorPoint = Vector2.new(0, 0.5),
                 BackgroundTransparency = 1,
                 Position = UDim2.new(0, 0, 0.5, 0),
-                Size = UDim2.new(0, 20, 1, 0),
+                Size = UDim2.new(0, 18, 1, 0),
                 SizeConstraint = Enum.SizeConstraint.RelativeYY,
                 Parent = TabButton,
             })
@@ -13527,8 +13755,8 @@ function Library:CreateWindow(WindowInfo)
             TabLabel = New("TextLabel", {
                 AnchorPoint = Vector2.new(0, 0.5),
                 BackgroundTransparency = 1,
-                Position = UDim2.new(0, 28, 0.5, 0),
-                Size = UDim2.new(1, -28, 0, 18),
+                Position = UDim2.new(0, 26, 0.5, 0),
+                Size = UDim2.new(1, -26, 0, 18),
                 Text = Name,
                 TextSize = 14,
                 TextTransparency = 0.5,
@@ -13562,6 +13790,7 @@ function Library:CreateWindow(WindowInfo)
                 Parent = Container,
             })
             Library:AddToRegistry(TabContainer, { ScrollBarImageColor3 = "OutlineColor" })
+            Library:AddCustomScrollbar(TabContainer)
             New("UIListLayout", {
                 HorizontalAlignment = Enum.HorizontalAlignment.Center,
                 Padding = UDim.new(0, 8),
@@ -14789,6 +15018,7 @@ function Library:CreateWindow(WindowInfo)
             Parent = SearchOverlay,
         })
         Library:AddToRegistry(ScrollFrame, { ScrollBarImageColor3 = "OutlineColor" })
+        Library:AddCustomScrollbar(ScrollFrame)
 
         New("UICorner", {
             CornerRadius = UDim.new(0, WindowInfo.CornerRadius),
@@ -14874,28 +15104,47 @@ function Library:CreateWindow(WindowInfo)
 
                     local MainScaleFactor = math.max((Library.MainWindowScale and Library.MainWindowScale.Scale) or 1, 0.0001)
 
-                    local AbsPos     = TargetInst.AbsolutePosition
-                    local AbsSize    = TargetInst.AbsoluteSize
-                    local MainAbsPos = MainFrame.AbsolutePosition
-                    local MainAbsSize = MainFrame.AbsoluteSize
-                    local RelX       = ((AbsPos.X - MainAbsPos.X) - ExpandX) / MainScaleFactor
-                    local RelY       = ((AbsPos.Y - MainAbsPos.Y) - ExpandY) / MainScaleFactor
-                    local SizeX      = (AbsSize.X + ExpandX * 2) / MainScaleFactor
-                    local SizeY      = (AbsSize.Y + ExpandY * 2) / MainScaleFactor
+                    local AbsPos  = TargetInst.AbsolutePosition
+                    local AbsSize = TargetInst.AbsoluteSize
 
-                    --// Clamp to the window: tall elements and targets inside
-                    --// scrolling frames otherwise bleed outside MainFrame. \\--
-                    local MaxX = MainAbsSize.X / MainScaleFactor
-                    local MaxY = MainAbsSize.Y / MainScaleFactor
-                    local ClampX0 = math.max(RelX, 0)
-                    local ClampY0 = math.max(RelY, 0)
-                    local ClampX1 = math.min(RelX + SizeX, MaxX)
-                    local ClampY1 = math.min(RelY + SizeY, MaxY)
-                    if ClampX1 - ClampX0 < 4 or ClampY1 - ClampY0 < 4 then
-                        return
+                    --// Anchor the flash to the nearest scrolling frame's canvas
+                    --// when there is one, so it stays on the element when the
+                    --// user scrolls instead of floating in window space. The
+                    --// frame clips it, which replaces the old window clamp. \\--
+                    local Scroller = TargetInst:FindFirstAncestorOfClass("ScrollingFrame")
+                    local FlashParent, RelX, RelY, SizeX, SizeY
+
+                    if Scroller then
+                        local ScrollAbs = Scroller.AbsolutePosition
+                        local Canvas    = Scroller.CanvasPosition
+                        RelX  = (AbsPos.X - ScrollAbs.X) / MainScaleFactor + Canvas.X - ExpandX / MainScaleFactor
+                        RelY  = (AbsPos.Y - ScrollAbs.Y) / MainScaleFactor + Canvas.Y - ExpandY / MainScaleFactor
+                        SizeX = AbsSize.X / MainScaleFactor + (ExpandX * 2) / MainScaleFactor
+                        SizeY = AbsSize.Y / MainScaleFactor + (ExpandY * 2) / MainScaleFactor
+                        FlashParent = Scroller
+                    else
+                        local MainAbsPos  = MainFrame.AbsolutePosition
+                        local MainAbsSize = MainFrame.AbsoluteSize
+                        RelX  = ((AbsPos.X - MainAbsPos.X) - ExpandX) / MainScaleFactor
+                        RelY  = ((AbsPos.Y - MainAbsPos.Y) - ExpandY) / MainScaleFactor
+                        SizeX = (AbsSize.X + ExpandX * 2) / MainScaleFactor
+                        SizeY = (AbsSize.Y + ExpandY * 2) / MainScaleFactor
+
+                        --// Clamp to the window: tall elements would otherwise
+                        --// bleed outside MainFrame. \\--
+                        local MaxX = MainAbsSize.X / MainScaleFactor
+                        local MaxY = MainAbsSize.Y / MainScaleFactor
+                        local ClampX0 = math.max(RelX, 0)
+                        local ClampY0 = math.max(RelY, 0)
+                        local ClampX1 = math.min(RelX + SizeX, MaxX)
+                        local ClampY1 = math.min(RelY + SizeY, MaxY)
+                        if ClampX1 - ClampX0 < 4 or ClampY1 - ClampY0 < 4 then
+                            return
+                        end
+                        RelX, RelY = ClampX0, ClampY0
+                        SizeX, SizeY = ClampX1 - ClampX0, ClampY1 - ClampY0
+                        FlashParent = MainFrame
                     end
-                    RelX, RelY = ClampX0, ClampY0
-                    SizeX, SizeY = ClampX1 - ClampX0, ClampY1 - ClampY0
 
                     local FlashOutline = New("Frame", {
                         BackgroundTransparency = 1,
@@ -14905,7 +15154,7 @@ function Library:CreateWindow(WindowInfo)
                         ClipsDescendants = true,
 
                         ZIndex = Library.TooltipZIndex,
-                        Parent = MainFrame,
+                        Parent = FlashParent,
                     })
                     local FlashStroke = New("UIStroke", {
                         Color = Library.Scheme and Library.Scheme.AccentColor or Color3.fromRGB(100, 180, 255),
@@ -15010,7 +15259,7 @@ function Library:CreateWindow(WindowInfo)
 
         --// Rebuild-scoped caches: fonts + accent hex are identical for every
         --// row, so compute once per rebuild instead of per row. \\--
-        local RebuildTabFont, RebuildRowFont, RebuildAccentHex = nil, nil, nil
+        local RebuildTabFont, RebuildRowFont = nil, nil
         local RowHoverTween = TweenInfo.new(0.08)
 
         local function EscapeRichText(Value: string): string
@@ -15029,9 +15278,10 @@ function Library:CreateWindow(WindowInfo)
             Lower = Lower or LowerCached(Text)
             local PlainS, PlainE = Lower:find(Query, 1, true)
             if PlainS then
-                local HexFast = RebuildAccentHex or string.format("#%s", Library.Scheme.AccentColor:ToHex())
+                --// Bold only: no accent colour, so the matched letters keep the
+                --// same colour as the rest of the row (and the arrow). \\--
                 return EscapeRichText(Text:sub(1, PlainS - 1))
-                    .. string.format('<font color="%s"><b>%s</b></font>', HexFast, EscapeRichText(Text:sub(PlainS, PlainE)))
+                    .. string.format("<b>%s</b>", EscapeRichText(Text:sub(PlainS, PlainE)))
                     .. EscapeRichText(Text:sub(PlainE + 1))
             end
 
@@ -15050,10 +15300,9 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local OrigStart, OrigEnd = Map[S], Map[E]
-            local Hex = RebuildAccentHex or string.format("#%s", Library.Scheme.AccentColor:ToHex())
 
             return EscapeRichText(Text:sub(1, OrigStart - 1))
-                .. string.format('<font color="%s"><b>%s</b></font>', Hex, EscapeRichText(Text:sub(OrigStart, OrigEnd)))
+                .. string.format("<b>%s</b>", EscapeRichText(Text:sub(OrigStart, OrigEnd)))
                 .. EscapeRichText(Text:sub(OrigEnd + 1))
         end
 
@@ -15602,13 +15851,6 @@ function Library:CreateWindow(WindowInfo)
                 local Base = Font.fromEnum(Enum.Font.GothamBold)
                 RebuildTabFont = Font.new(Base.Family, Enum.FontWeight.Heavy, Base.Style)
                 RebuildRowFont = Font.fromEnum(Enum.Font.GothamMedium)
-                local Accent = Library.Scheme and Library.Scheme.AccentColor
-                if Accent then
-                    local Ok, Hex = pcall(function() return Accent:ToHex() end)
-                    RebuildAccentHex = (Ok and Hex) and ("#" .. Hex) or "#FFFFFF"
-                else
-                    RebuildAccentHex = "#FFFFFF"
-                end
             end
 
             local Search    = NormalizeSearch(SearchText:lower():match("^%s*(.-)%s*$") or "")
@@ -16232,6 +16474,7 @@ function Library:CreateLoading(LoadingInfo)
         ScrollBarThickness = 0,
         Parent = SideBar,
     })
+    Library:AddCustomScrollbar(SidebarScrolling)
     local SidebarList = New("UIListLayout", {
         Padding = UDim.new(0, 8),
         SortOrder = Enum.SortOrder.LayoutOrder,
