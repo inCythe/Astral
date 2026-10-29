@@ -247,8 +247,8 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix6",
-    BuildDate = "2026-10-13",
+    BuildId = "virt-fix7",
+    BuildDate = "2026-10-29",
     SearchVirtualized = true,
 
     LocalPlayer = LocalPlayer,
@@ -1604,7 +1604,16 @@ local Icons = {} :: { [string]: string }
 local function HttpGetAny(Url: string): (boolean, string?)
     local Methods = {}
 
-    if game and typeof(game.HttpGet) == "function" then
+    --// Reading a missing member on an Instance raises instead of returning
+    --// nil, so probe game.HttpGet behind a pcall: in Studio (and any
+    --// non-executor host) the raw index aborted icon loading before the
+    --// fallbacks below could run. \\--
+    local HasGameHttpGet = false
+    pcall(function()
+        HasGameHttpGet = typeof(game.HttpGet) == "function"
+    end)
+
+    if HasGameHttpGet then
         table.insert(Methods, function()
             return game:HttpGet(Url)
         end)
