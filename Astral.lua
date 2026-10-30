@@ -2534,7 +2534,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         BackgroundColor3 = "FontColor",
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Size = UDim2.fromOffset(4, 0),
+        Size = UDim2.fromOffset(6, 0),
         Visible = false,
         ZIndex = (Scroll.ZIndex or 1) + 30,
         Parent = Screen,
@@ -2567,7 +2567,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         --// Only fade in when actually faded: scrolling fires this every
         --// frame, and spawning a tween per frame would be wasteful. \\--
         if Thumb.BackgroundTransparency > 0.5 then
-            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.35 }):Play()
+            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.38 }):Play()
         end
     end
 
@@ -2591,10 +2591,17 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
     Thumb.MouseEnter:Connect(function()
         State.Hover = true
         Reveal()
+        TweenService:Create(Thumb, TweenInfo.new(0.12), { BackgroundTransparency = 0.2 }):Play()
     end)
     Thumb.MouseLeave:Connect(function()
+        if State.Dragging then
+            return
+        end
         State.Hover = false
         State.IdleAt = os.clock()
+        if State.Shown then
+            TweenService:Create(Thumb, TweenInfo.new(0.18), { BackgroundTransparency = 0.38 }):Play()
+        end
     end)
 
     Thumb.InputBegan:Connect(function(Input: InputObject)
@@ -2606,6 +2613,12 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         State.Dragging = true
         State.Hover = true
         Reveal()
+
+        local Accent = Library.Scheme and Library.Scheme.AccentColor
+        TweenService:Create(Thumb, TweenInfo.new(0.12), {
+            BackgroundTransparency = 0.15,
+            BackgroundColor3 = Accent or Thumb.BackgroundColor3,
+        }):Play()
 
         local StartY = Input.Position.Y
         local StartCanvas = Scroll.CanvasPosition.Y
@@ -2625,6 +2638,9 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
 
             local MaxScroll = math.max(Scroll.AbsoluteCanvasSize.Y - Scroll.AbsoluteSize.Y, 1)
             local Scale = Library.DPIScale or 1
+            if Scale == 0 then
+                Scale = 1
+            end
             local Delta = (MoveInput.Position.Y - StartY) / Track * (MaxScroll / Scale)
             Scroll.CanvasPosition = Vector2.new(
                 Scroll.CanvasPosition.X,
@@ -2643,6 +2659,10 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
             State.Dragging = false
             State.Hover = false
             State.IdleAt = os.clock()
+            TweenService:Create(Thumb, TweenInfo.new(0.15), {
+                BackgroundTransparency = 0.3,
+                BackgroundColor3 = GetSchemeValue("FontColor") or Color3.fromRGB(255, 255, 255),
+            }):Play()
             if ChangedConnection then
                 ChangedConnection:Disconnect()
             end
@@ -2680,11 +2700,16 @@ do
         local Track = AbsSize.Y - 4
         local ThumbHeight = math.clamp(AbsSize.Y * (AbsSize.Y / Canvas.Y), 24, Track)
         local MaxScroll = math.max(Canvas.Y - AbsSize.Y, 1)
-        local Progress = math.clamp(((Scroll.CanvasPosition.Y * (Library.DPIScale or 1)) / MaxScroll), 0, 1)
+        local Scale = Library.DPIScale or 1
+        if Scale == 0 then
+            Scale = 1
+        end
+        local Progress = math.clamp(((Scroll.CanvasPosition.Y * Scale) / MaxScroll), 0, 1)
 
-        Thumb.Size = UDim2.fromOffset(4, ThumbHeight)
+        local Width = (State.Hover or State.Dragging) and 9 or 6
+        Thumb.Size = UDim2.fromOffset(Width, ThumbHeight)
         Thumb.Position = UDim2.fromOffset(
-            AbsPos.X + AbsSize.X - 6,
+            AbsPos.X + AbsSize.X - 2 - Width,
             AbsPos.Y + 2 + Progress * (Track - ThumbHeight)
         )
         Thumb.ZIndex = (Scroll.ZIndex or 1) + 30
@@ -2694,7 +2719,7 @@ do
             State.Reveal()
         end
 
-        if State.Shown and os.clock() - State.IdleAt > 1.1 then
+        if State.Shown and os.clock() - State.IdleAt > 1.6 then
             State.Conceal()
         end
 
