@@ -247,8 +247,8 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix8",
-    BuildDate = "2026-10-29",
+    BuildId = "virt-fix9",
+    BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
     LocalPlayer = LocalPlayer,
