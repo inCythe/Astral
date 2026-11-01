@@ -149,7 +149,7 @@ The root `Library` table contains global state and utility methods.
 | `Library.DPIScale` | number | `1` | Current global scale factor set via `Library:SetDPIScale` (percentage / 100) |
 | `Library.AutoDPIScale` | boolean | `true` | Whether the UI scale is currently being computed automatically from screen size |
 | `Library.ShowToggleFrameInKeybinds` | boolean | `true` | Show the toggle checkbox in the keybind list |
-| `Library.HighlightSearchResults` | boolean | `true` | Bold the matching substring of search results (same text colour) |
+| `Library.HighlightSearchResults` | boolean | `true` | Tint the matching substring of search results with the accent colour |
 | `Library.WaitForIconsOnLoad` | boolean | `true` | Wait for icons to load before creating windows/loading screens |
 | `Library.Animations` | table | all `false` | `ToggleWindow` (window fade) and `TabSwitch` (swipe transition) animations; see `Window:SetAnimations` |
 | `Library.TabTransitionInfo` | TweenInfo | `0.22s Quad Out` | Timing for the tab-switch swipe |

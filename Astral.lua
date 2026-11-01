@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix9",
+    BuildId = "virt-fix10",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -2499,6 +2499,11 @@ end
 --// space, which would make the thumb scroll with the content. \\--
 local CustomScrollbars = {}
 
+--// Drawn above every library band (search rows sit at 12002), because ZIndex
+--// is flattened per ScreenGui: children of the scrolled container would
+--// otherwise paint over the thumb and hide it. \\--
+local ScrollbarTrackZ, ScrollbarThumbZ = 13000, 13001
+
 local function ScrollbarAncestorsVisible(Scroll: ScrollingFrame): boolean
     local Current: Instance? = Scroll
     while Current and not Current:IsA("ScreenGui") do
@@ -2536,7 +2541,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         BorderSizePixel = 0,
         Size = UDim2.fromOffset(6, 0),
         Visible = false,
-        ZIndex = (Scroll.ZIndex or 1) + 30,
+        ZIndex = ScrollbarThumbZ,
         Parent = Screen,
     })
     Library:AddToRegistry(Thumb, { BackgroundColor3 = "FontColor" })
@@ -2545,9 +2550,29 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         Parent = Thumb,
     })
 
+    --// Faint rounded trough behind the thumb. It fades in with the thumb, so
+    --// the control reads as a scrollbar while it is active and disappears
+    --// completely when idle. \\--
+    local Track = New("Frame", {
+        Name = "AstralScrollbarTrack",
+        BackgroundColor3 = "FontColor",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.fromOffset(6, 0),
+        Visible = false,
+        ZIndex = ScrollbarTrackZ,
+        Parent = Screen,
+    })
+    Library:AddToRegistry(Track, { BackgroundColor3 = "FontColor" })
+    New("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = Track,
+    })
+
     local State = {
         Scroll = Scroll,
         Thumb = Thumb,
+        Track = Track,
         Hover = false,
         Dragging = false,
         LastCanvasY = Scroll.CanvasPosition.Y,
@@ -2562,12 +2587,17 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         if not State.Shown then
             State.Shown = true
             Thumb.Visible = true
+            Track.Visible = true
             Thumb.BackgroundTransparency = 1
+            Track.BackgroundTransparency = 1
         end
         --// Only fade in when actually faded: scrolling fires this every
         --// frame, and spawning a tween per frame would be wasteful. \\--
         if Thumb.BackgroundTransparency > 0.5 then
-            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.38 }):Play()
+            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.45 }):Play()
+        end
+        if Track.BackgroundTransparency > 0.95 then
+            TweenService:Create(Track, TweenInfo.new(0.15), { BackgroundTransparency = 0.94 }):Play()
         end
     end
 
@@ -2580,9 +2610,11 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         State.HideToken += 1
         local Token = State.HideToken
         TweenService:Create(Thumb, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+        TweenService:Create(Track, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
         task.delay(0.32, function()
             if Token == State.HideToken and not State.Hover and not State.Dragging then
                 Thumb.Visible = false
+                Track.Visible = false
                 State.Shown = false
             end
         end)
@@ -2591,7 +2623,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
     Thumb.MouseEnter:Connect(function()
         State.Hover = true
         Reveal()
-        TweenService:Create(Thumb, TweenInfo.new(0.12), { BackgroundTransparency = 0.2 }):Play()
+        TweenService:Create(Thumb, TweenInfo.new(0.12), { BackgroundTransparency = 0.25 }):Play()
     end)
     Thumb.MouseLeave:Connect(function()
         if State.Dragging then
@@ -2600,7 +2632,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         State.Hover = false
         State.IdleAt = os.clock()
         if State.Shown then
-            TweenService:Create(Thumb, TweenInfo.new(0.18), { BackgroundTransparency = 0.38 }):Play()
+            TweenService:Create(Thumb, TweenInfo.new(0.18), { BackgroundTransparency = 0.45 }):Play()
         end
     end)
 
@@ -2660,7 +2692,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
             State.Hover = false
             State.IdleAt = os.clock()
             TweenService:Create(Thumb, TweenInfo.new(0.15), {
-                BackgroundTransparency = 0.3,
+                BackgroundTransparency = 0.38,
                 BackgroundColor3 = GetSchemeValue("FontColor") or Color3.fromRGB(255, 255, 255),
             }):Play()
             if ChangedConnection then
@@ -2680,9 +2712,10 @@ end
 
 do
     local function SyncScrollbar(State)
-        local Scroll, Thumb = State.Scroll, State.Thumb
+        local Scroll, Thumb, Track = State.Scroll, State.Thumb, State.Track
         if not Scroll.Parent then
             Thumb:Destroy()
+            Track:Destroy()
             return false
         end
 
@@ -2692,13 +2725,15 @@ do
         if not ScrollbarAncestorsVisible(Scroll) or AbsSize.Y < 8 or Canvas.Y <= AbsSize.Y + 1 then
             if Thumb.Visible then
                 Thumb.Visible = false
+                Track.Visible = false
                 State.Shown = false
             end
             return true
         end
 
-        local Track = AbsSize.Y - 4
-        local ThumbHeight = math.clamp(AbsSize.Y * (AbsSize.Y / Canvas.Y), 24, Track)
+        local Pad = 2
+        local Rail = math.max(AbsSize.Y - Pad * 2, 1)
+        local ThumbHeight = math.clamp(AbsSize.Y * (AbsSize.Y / Canvas.Y), 24, Rail)
         local MaxScroll = math.max(Canvas.Y - AbsSize.Y, 1)
         local Scale = Library.DPIScale or 1
         if Scale == 0 then
@@ -2707,12 +2742,18 @@ do
         local Progress = math.clamp(((Scroll.CanvasPosition.Y * Scale) / MaxScroll), 0, 1)
 
         local Width = (State.Hover or State.Dragging) and 9 or 6
+        local Right = AbsPos.X + AbsSize.X - Pad
+
+        Track.Size = UDim2.fromOffset(4, Rail)
+        Track.Position = UDim2.fromOffset(Right - 5, AbsPos.Y + Pad)
+        Track.ZIndex = ScrollbarTrackZ
+
         Thumb.Size = UDim2.fromOffset(Width, ThumbHeight)
         Thumb.Position = UDim2.fromOffset(
-            AbsPos.X + AbsSize.X - 2 - Width,
-            AbsPos.Y + 2 + Progress * (Track - ThumbHeight)
+            Right - Width,
+            AbsPos.Y + Pad + Progress * (Rail - ThumbHeight)
         )
-        Thumb.ZIndex = (Scroll.ZIndex or 1) + 30
+        Thumb.ZIndex = ScrollbarThumbZ
 
         if Scroll.CanvasPosition.Y ~= State.LastCanvasY then
             State.LastCanvasY = Scroll.CanvasPosition.Y
@@ -15128,35 +15169,23 @@ function Library:CreateWindow(WindowInfo)
                     if not (TargetInst and TargetInst.Parent) then return end
 
                     local MainScaleFactor = math.max((Library.MainWindowScale and Library.MainWindowScale.Scale) or 1, 0.0001)
-
-                    local AbsPos  = TargetInst.AbsolutePosition
-                    local AbsSize = TargetInst.AbsoluteSize
-
-                    --// Anchor the flash to the nearest scrolling frame's canvas
-                    --// when there is one, so it stays on the element when the
-                    --// user scrolls instead of floating in window space. The
-                    --// frame clips it, which replaces the old window clamp. \\--
                     local Scroller = TargetInst:FindFirstAncestorOfClass("ScrollingFrame")
-                    local FlashParent, RelX, RelY, SizeX, SizeY
 
-                    if Scroller then
-                        local ScrollAbs = Scroller.AbsolutePosition
-                        local Canvas    = Scroller.CanvasPosition
-                        RelX  = (AbsPos.X - ScrollAbs.X) / MainScaleFactor + Canvas.X - ExpandX / MainScaleFactor
-                        RelY  = (AbsPos.Y - ScrollAbs.Y) / MainScaleFactor + Canvas.Y - ExpandY / MainScaleFactor
-                        SizeX = AbsSize.X / MainScaleFactor + (ExpandX * 2) / MainScaleFactor
-                        SizeY = AbsSize.Y / MainScaleFactor + (ExpandY * 2) / MainScaleFactor
-                        FlashParent = Scroller
-                    else
-                        local MainAbsPos  = MainFrame.AbsolutePosition
+                    --// Window-space frame, re-anchored on scroll. Parenting the
+                    --// flash inside the ScrollingFrame was clipped away in
+                    --// practice, and window clamping already keeps tall targets
+                    --// inside MainFrame. \\--
+                    local function Compute()
+                        local AbsPos     = TargetInst.AbsolutePosition
+                        local AbsSize    = TargetInst.AbsoluteSize
+                        local MainAbsPos = MainFrame.AbsolutePosition
                         local MainAbsSize = MainFrame.AbsoluteSize
-                        RelX  = ((AbsPos.X - MainAbsPos.X) - ExpandX) / MainScaleFactor
-                        RelY  = ((AbsPos.Y - MainAbsPos.Y) - ExpandY) / MainScaleFactor
-                        SizeX = (AbsSize.X + ExpandX * 2) / MainScaleFactor
-                        SizeY = (AbsSize.Y + ExpandY * 2) / MainScaleFactor
 
-                        --// Clamp to the window: tall elements would otherwise
-                        --// bleed outside MainFrame. \\--
+                        local RelX  = ((AbsPos.X - MainAbsPos.X) - ExpandX) / MainScaleFactor
+                        local RelY  = ((AbsPos.Y - MainAbsPos.Y) - ExpandY) / MainScaleFactor
+                        local SizeX = (AbsSize.X + ExpandX * 2) / MainScaleFactor
+                        local SizeY = (AbsSize.Y + ExpandY * 2) / MainScaleFactor
+
                         local MaxX = MainAbsSize.X / MainScaleFactor
                         local MaxY = MainAbsSize.Y / MainScaleFactor
                         local ClampX0 = math.max(RelX, 0)
@@ -15164,12 +15193,14 @@ function Library:CreateWindow(WindowInfo)
                         local ClampX1 = math.min(RelX + SizeX, MaxX)
                         local ClampY1 = math.min(RelY + SizeY, MaxY)
                         if ClampX1 - ClampX0 < 4 or ClampY1 - ClampY0 < 4 then
-                            return
+                            return nil
                         end
-                        RelX, RelY = ClampX0, ClampY0
-                        SizeX, SizeY = ClampX1 - ClampX0, ClampY1 - ClampY0
-                        FlashParent = MainFrame
+
+                        return ClampX0, ClampY0, ClampX1 - ClampX0, ClampY1 - ClampY0
                     end
+
+                    local RelX, RelY, SizeX, SizeY = Compute()
+                    if not RelX then return end
 
                     local FlashOutline = New("Frame", {
                         BackgroundTransparency = 1,
@@ -15178,8 +15209,10 @@ function Library:CreateWindow(WindowInfo)
                         Size = UDim2.fromOffset(SizeX, SizeY),
                         ClipsDescendants = true,
 
-                        ZIndex = Library.TooltipZIndex,
-                        Parent = FlashParent,
+                        --// Above the search overlay band as well, so the ring is
+                        --// never covered while the overlay is still fading out. \\--
+                        ZIndex = math.max(Library.TooltipZIndex, (Library.SearchOverlayZIndex or 0) + 5),
+                        Parent = MainFrame,
                     })
                     local FlashStroke = New("UIStroke", {
                         Color = Library.Scheme and Library.Scheme.AccentColor or Color3.fromRGB(100, 180, 255),
@@ -15192,12 +15225,43 @@ function Library:CreateWindow(WindowInfo)
                         Parent = FlashOutline,
                     })
 
+                    local ScrollConnection
+                    if Scroller then
+                        ScrollConnection = Scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+                            if not (FlashOutline.Parent and TargetInst.Parent) then
+                                return
+                            end
+
+                            --// Hide once the element leaves the visible window;
+                            --// otherwise recompute so the outline travels with
+                            --// the content instead of staying behind. \\--
+                            local Pos, Size = TargetInst.AbsolutePosition, TargetInst.AbsoluteSize
+                            local SPos, SSize = Scroller.AbsolutePosition, Scroller.AbsoluteSize
+                            local InView = Pos.X + Size.X > SPos.X and Pos.X < SPos.X + SSize.X
+                                and Pos.Y + Size.Y > SPos.Y and Pos.Y < SPos.Y + SSize.Y
+
+                            local X, Y, W, H = Compute()
+                            if not InView or not X then
+                                FlashOutline.Visible = false
+                                return
+                            end
+
+                            FlashOutline.Position = UDim2.fromOffset(X, Y)
+                            FlashOutline.Size = UDim2.fromOffset(W, H)
+                            FlashOutline.Visible = true
+                        end)
+                        Library:GiveSignal(ScrollConnection)
+                    end
+
                     task.delay(0.8, function()
                         if FlashStroke and FlashStroke.Parent then
                             TweenService:Create(FlashStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                                 Transparency = 1,
                             }):Play()
                             task.delay(0.55, function()
+                                if ScrollConnection then
+                                    ScrollConnection:Disconnect()
+                                end
                                 if FlashOutline and FlashOutline.Parent then
                                     FlashOutline:Destroy()
                                 end
@@ -15284,7 +15348,7 @@ function Library:CreateWindow(WindowInfo)
 
         --// Rebuild-scoped caches: fonts + accent hex are identical for every
         --// row, so compute once per rebuild instead of per row. \\--
-        local RebuildTabFont, RebuildRowFont = nil, nil
+        local RebuildTabFont, RebuildRowFont, RebuildAccentHex = nil, nil, nil
         local RowHoverTween = TweenInfo.new(0.08)
 
         local function EscapeRichText(Value: string): string
@@ -15303,10 +15367,12 @@ function Library:CreateWindow(WindowInfo)
             Lower = Lower or LowerCached(Text)
             local PlainS, PlainE = Lower:find(Query, 1, true)
             if PlainS then
-                --// Bold only: no accent colour, so the matched letters keep the
-                --// same colour as the rest of the row (and the arrow). \\--
+                --// Accent colour is the only reliable emphasis here: an explicit
+                --// FontFace on the row makes <b> a no-op. Matches the arrow,
+                --// badges and slider fill. \\--
+                local Hex = RebuildAccentHex or "#FFFFFF"
                 return EscapeRichText(Text:sub(1, PlainS - 1))
-                    .. string.format("<b>%s</b>", EscapeRichText(Text:sub(PlainS, PlainE)))
+                    .. string.format('<font color="%s"><b>%s</b></font>', Hex, EscapeRichText(Text:sub(PlainS, PlainE)))
                     .. EscapeRichText(Text:sub(PlainE + 1))
             end
 
@@ -15325,9 +15391,10 @@ function Library:CreateWindow(WindowInfo)
             end
 
             local OrigStart, OrigEnd = Map[S], Map[E]
+            local Hex = RebuildAccentHex or "#FFFFFF"
 
             return EscapeRichText(Text:sub(1, OrigStart - 1))
-                .. string.format("<b>%s</b>", EscapeRichText(Text:sub(OrigStart, OrigEnd)))
+                .. string.format('<font color="%s"><b>%s</b></font>', Hex, EscapeRichText(Text:sub(OrigStart, OrigEnd)))
                 .. EscapeRichText(Text:sub(OrigEnd + 1))
         end
 
@@ -15876,6 +15943,12 @@ function Library:CreateWindow(WindowInfo)
                 local Base = Font.fromEnum(Enum.Font.GothamBold)
                 RebuildTabFont = Font.new(Base.Family, Enum.FontWeight.Heavy, Base.Style)
                 RebuildRowFont = Font.fromEnum(Enum.Font.GothamMedium)
+
+                local Accent = Library.Scheme and Library.Scheme.AccentColor
+                local Ok, Hex = pcall(function()
+                    return Accent and Accent:ToHex()
+                end)
+                RebuildAccentHex = (Ok and Hex) and ("#" .. Hex) or "#FFFFFF"
             end
 
             local Search    = NormalizeSearch(SearchText:lower():match("^%s*(.-)%s*$") or "")
