@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix10",
+    BuildId = "virt-fix11",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -2539,35 +2539,43 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         BackgroundColor3 = "FontColor",
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Size = UDim2.fromOffset(6, 0),
+        Size = UDim2.fromOffset(4, 0),
         Visible = false,
         ZIndex = ScrollbarThumbZ,
         Parent = Screen,
     })
-    Library:AddToRegistry(Thumb, { BackgroundColor3 = "FontColor" })
-    New("UICorner", {
-        CornerRadius = UDim.new(1, 0),
-        Parent = Thumb,
-    })
+    Library:AddToRegistry(Thumb, { BackgroundColor3 = "AccentColor" })
+    --// Same corner radius as every other element (`CornerRadius / 2`), so the
+    --// thumb reads as part of the UI instead of a capsule. \\--
+    table.insert(
+        Library.Corners,
+        New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius / 2),
+            Parent = Thumb,
+        })
+    )
 
     --// Faint rounded trough behind the thumb. It fades in with the thumb, so
     --// the control reads as a scrollbar while it is active and disappears
     --// completely when idle. \\--
     local Track = New("Frame", {
         Name = "AstralScrollbarTrack",
-        BackgroundColor3 = "FontColor",
+        BackgroundColor3 = "AccentColor",
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Size = UDim2.fromOffset(6, 0),
+        Size = UDim2.fromOffset(2, 0),
         Visible = false,
         ZIndex = ScrollbarTrackZ,
         Parent = Screen,
     })
-    Library:AddToRegistry(Track, { BackgroundColor3 = "FontColor" })
-    New("UICorner", {
-        CornerRadius = UDim.new(1, 0),
-        Parent = Track,
-    })
+    Library:AddToRegistry(Track, { BackgroundColor3 = "AccentColor" })
+    table.insert(
+        Library.Corners,
+        New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius / 2),
+            Parent = Track,
+        })
+    )
 
     local State = {
         Scroll = Scroll,
@@ -2594,7 +2602,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         --// Only fade in when actually faded: scrolling fires this every
         --// frame, and spawning a tween per frame would be wasteful. \\--
         if Thumb.BackgroundTransparency > 0.5 then
-            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.45 }):Play()
+            TweenService:Create(Thumb, TweenInfo.new(0.15), { BackgroundTransparency = 0.4 }):Play()
         end
         if Track.BackgroundTransparency > 0.95 then
             TweenService:Create(Track, TweenInfo.new(0.15), { BackgroundTransparency = 0.94 }):Play()
@@ -2623,7 +2631,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
     Thumb.MouseEnter:Connect(function()
         State.Hover = true
         Reveal()
-        TweenService:Create(Thumb, TweenInfo.new(0.12), { BackgroundTransparency = 0.25 }):Play()
+        TweenService:Create(Thumb, TweenInfo.new(0.12), { BackgroundTransparency = 0.2 }):Play()
     end)
     Thumb.MouseLeave:Connect(function()
         if State.Dragging then
@@ -2632,7 +2640,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         State.Hover = false
         State.IdleAt = os.clock()
         if State.Shown then
-            TweenService:Create(Thumb, TweenInfo.new(0.18), { BackgroundTransparency = 0.45 }):Play()
+            TweenService:Create(Thumb, TweenInfo.new(0.18), { BackgroundTransparency = 0.4 }):Play()
         end
     end)
 
@@ -2646,11 +2654,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         State.Hover = true
         Reveal()
 
-        local Accent = Library.Scheme and Library.Scheme.AccentColor
-        TweenService:Create(Thumb, TweenInfo.new(0.12), {
-            BackgroundTransparency = 0.15,
-            BackgroundColor3 = Accent or Thumb.BackgroundColor3,
-        }):Play()
+        TweenService:Create(Thumb, TweenInfo.new(0.12), { BackgroundTransparency = 0.1 }):Play()
 
         local StartY = Input.Position.Y
         local StartCanvas = Scroll.CanvasPosition.Y
@@ -2692,8 +2696,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
             State.Hover = false
             State.IdleAt = os.clock()
             TweenService:Create(Thumb, TweenInfo.new(0.15), {
-                BackgroundTransparency = 0.38,
-                BackgroundColor3 = GetSchemeValue("FontColor") or Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 0.4,
             }):Play()
             if ChangedConnection then
                 ChangedConnection:Disconnect()
@@ -2741,11 +2744,11 @@ do
         end
         local Progress = math.clamp(((Scroll.CanvasPosition.Y * Scale) / MaxScroll), 0, 1)
 
-        local Width = (State.Hover or State.Dragging) and 9 or 6
+        local Width = (State.Hover or State.Dragging) and 6 or 4
         local Right = AbsPos.X + AbsSize.X - Pad
 
-        Track.Size = UDim2.fromOffset(4, Rail)
-        Track.Position = UDim2.fromOffset(Right - 5, AbsPos.Y + Pad)
+        Track.Size = UDim2.fromOffset(2, Rail)
+        Track.Position = UDim2.fromOffset(Right - 3, AbsPos.Y + Pad)
         Track.ZIndex = ScrollbarTrackZ
 
         Thumb.Size = UDim2.fromOffset(Width, ThumbHeight)
@@ -15209,9 +15212,9 @@ function Library:CreateWindow(WindowInfo)
                         Size = UDim2.fromOffset(SizeX, SizeY),
                         ClipsDescendants = true,
 
-                        --// Above the search overlay band as well, so the ring is
-                        --// never covered while the overlay is still fading out. \\--
-                        ZIndex = math.max(Library.TooltipZIndex, (Library.SearchOverlayZIndex or 0) + 5),
+                        --// Above every content/overlay-menu band, but one below the
+                        --// search overlay so the ring never paints over it. \\--
+                        ZIndex = (Library.SearchOverlayZIndex or Library.TooltipZIndex) - 1,
                         Parent = MainFrame,
                     })
                     local FlashStroke = New("UIStroke", {
