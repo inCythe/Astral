@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix11",
+    BuildId = "virt-fix12",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -2531,6 +2531,28 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         return
     end
 
+    --// Live in the same coordinate space as the scrolled UI, not in raw screen
+    --// pixels: every window/menu is wrapped in a UIScale (mobile commonly runs
+    --// at ~0.55), and a screen-space thumb would ignore that scale and drift
+    --// away from the frame it belongs to. \\--
+    local Scaled = Library:FindScaledContainer(Scroll)
+    local Layer: Instance = Scaled or Screen
+
+    local function LayerScale(): number
+        local Total = 1
+        local Current: Instance? = Scroll.Parent
+        while Current and Current ~= Layer.Parent do
+            if Current:IsA("GuiObject") or Current:IsA("ScreenGui") then
+                local UiScale = Current:FindFirstChildOfClass("UIScale")
+                if UiScale then
+                    Total *= UiScale.Scale
+                end
+            end
+            Current = Current.Parent
+        end
+        return math.max(Total, 0.0001)
+    end
+
     Scroll.ScrollBarThickness = 0
     Scroll.ScrollBarImageTransparency = 1
 
@@ -2542,7 +2564,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         Size = UDim2.fromOffset(4, 0),
         Visible = false,
         ZIndex = ScrollbarThumbZ,
-        Parent = Screen,
+        Parent = Layer,
     })
     Library:AddToRegistry(Thumb, { BackgroundColor3 = "AccentColor" })
     --// Same corner radius as every other element (`CornerRadius / 2`), so the
@@ -2566,7 +2588,7 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         Size = UDim2.fromOffset(2, 0),
         Visible = false,
         ZIndex = ScrollbarTrackZ,
-        Parent = Screen,
+        Parent = Layer,
     })
     Library:AddToRegistry(Track, { BackgroundColor3 = "AccentColor" })
     table.insert(
@@ -2581,6 +2603,8 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
         Scroll = Scroll,
         Thumb = Thumb,
         Track = Track,
+        Layer = Layer,
+        LayerScale = LayerScale,
         Hover = false,
         Dragging = false,
         LastCanvasY = Scroll.CanvasPosition.Y,
@@ -2667,20 +2691,17 @@ function Library:AddCustomScrollbar(Scroll: ScrollingFrame)
                 return
             end
 
-            local Track = Scroll.AbsoluteSize.Y - 4 - Thumb.AbsoluteSize.Y
-            if Track <= 0 then
-                return
-            end
-
-            local MaxScroll = math.max(Scroll.AbsoluteCanvasSize.Y - Scroll.AbsoluteSize.Y, 1)
-            local Scale = Library.DPIScale or 1
-            if Scale == 0 then
-                Scale = 1
-            end
-            local Delta = (MoveInput.Position.Y - StartY) / Track * (MaxScroll / Scale)
+            --// CanvasPosition is in the scroll's own (unscaled) units, so the
+            --// pointer delta is converted into the same space before mapping
+            --// across the remaining track distance. \\--
+            local LayerScale = State.LayerScale()
+            local FrameH  = Scroll.AbsoluteSize.Y / LayerScale
+            local Travel  = math.max(FrameH - 4 - Thumb.Size.Y.Offset, 1)
+            local MaxScroll = math.max((Scroll.AbsoluteCanvasSize.Y - Scroll.AbsoluteSize.Y) / LayerScale, 1)
+            local Delta = ((MoveInput.Position.Y - StartY) / LayerScale) * (MaxScroll / Travel)
             Scroll.CanvasPosition = Vector2.new(
                 Scroll.CanvasPosition.X,
-                math.clamp(StartCanvas + Delta, 0, MaxScroll / Scale)
+                math.clamp(StartCanvas + Delta, 0, MaxScroll)
             )
             State.IdleAt = os.clock()
         end)
@@ -2734,27 +2755,41 @@ do
             return true
         end
 
-        local Pad = 2
-        local Rail = math.max(AbsSize.Y - Pad * 2, 1)
-        local ThumbHeight = math.clamp(AbsSize.Y * (AbsSize.Y / Canvas.Y), 24, Rail)
-        local MaxScroll = math.max(Canvas.Y - AbsSize.Y, 1)
-        local Scale = Library.DPIScale or 1
-        if Scale == 0 then
-            Scale = 1
+        --// Everything below is expressed in the layer's local (unscaled) units,
+        --// so the UIScale on the window/menu applies to the scrollbar exactly
+        --// like it applies to the elements next to it. \\--
+        local Scale = State.LayerScale()
+        local Layer = State.Layer
+        local OriginX, OriginY = 0, 0
+        if Layer and Layer:IsA("GuiObject") then
+            local LayerPos = Layer.AbsolutePosition
+            OriginX, OriginY = LayerPos.X, LayerPos.Y
         end
-        local Progress = math.clamp(((Scroll.CanvasPosition.Y * Scale) / MaxScroll), 0, 1)
+
+        local PosX = (AbsPos.X - OriginX) / Scale
+        local PosY = (AbsPos.Y - OriginY) / Scale
+        local SizeX = AbsSize.X / Scale
+        local SizeY = AbsSize.Y / Scale
+        local CanvasY = Canvas.Y / Scale
+        local ScrollY = Scroll.CanvasPosition.Y
+
+        local Pad = 2
+        local Rail = math.max(SizeY - Pad * 2, 1)
+        local ThumbHeight = math.clamp(SizeY * (SizeY / CanvasY), 24, Rail)
+        local MaxScroll = math.max(CanvasY - SizeY, 1)
+        local Progress = math.clamp(ScrollY / MaxScroll, 0, 1)
 
         local Width = (State.Hover or State.Dragging) and 6 or 4
-        local Right = AbsPos.X + AbsSize.X - Pad
+        local Right = PosX + SizeX - Pad
 
         Track.Size = UDim2.fromOffset(2, Rail)
-        Track.Position = UDim2.fromOffset(Right - 3, AbsPos.Y + Pad)
+        Track.Position = UDim2.fromOffset(Right - 3, PosY + Pad)
         Track.ZIndex = ScrollbarTrackZ
 
         Thumb.Size = UDim2.fromOffset(Width, ThumbHeight)
         Thumb.Position = UDim2.fromOffset(
             Right - Width,
-            AbsPos.Y + Pad + Progress * (Rail - ThumbHeight)
+            PosY + Pad + Progress * (Rail - ThumbHeight)
         )
         Thumb.ZIndex = ScrollbarThumbZ
 
