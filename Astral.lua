@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix14",
+    BuildId = "virt-fix15",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -1483,10 +1483,13 @@ function Library:CalculateAutoBaseScale(): number
     local WinWidth = (Library.MainFrame and Library.MainFrame.Size.X.Offset) or 720
     local WinHeight = (Library.MainFrame and Library.MainFrame.Size.Y.Offset) or 600
 
-    local MarginX = 36
-    local MarginY = 36
-    local AvailableX = math.max(100, ViewportSize.X - MarginX)
-    local AvailableY = math.max(100, ViewportSize.Y - MarginY)
+    --// Proportional margins: 5% of the viewport on every side. A fixed 36px
+    --// gutter is 3% of a desktop screen but 10% of a phone, which is why the
+    --// window filled the phone edge to edge while it looked inset on PC. \\--
+    local MarginX = math.max(ViewportSize.X * 0.05, 12)
+    local MarginY = math.max(ViewportSize.Y * 0.05, 12)
+    local AvailableX = math.max(100, ViewportSize.X - MarginX * 2)
+    local AvailableY = math.max(100, ViewportSize.Y - MarginY * 2)
 
     local ScaleX = AvailableX / WinWidth
     local ScaleY = AvailableY / WinHeight
@@ -1512,6 +1515,32 @@ function Library:SetDPIScale(DPIScale: number)
 
     local Multiplier = DPIScale / 5
     local ScaleFactor = Library.BaseScale * Multiplier
+
+    --// In automatic mode the DPI multiplier can push the window past the
+    --// screen (mobile reports higher values), so cap the *rendered* window
+    --// scale at what actually fits with the margins above. Manual scaling
+    --// (AutoDPIScale = false) keeps full control. \\--
+    if Library.AutoDPIScale ~= false then
+        local Camera = workspace.CurrentCamera
+        local ViewportSize: Vector2 = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
+        local WinWidth = (Library.MainFrame and Library.MainFrame.Size.X.Offset) or 0
+        local WinHeight = (Library.MainFrame and Library.MainFrame.Size.Y.Offset) or 0
+
+        if WinWidth > 0 and WinHeight > 0 and ViewportSize.X > 20 and ViewportSize.Y > 20 then
+            local MarginX = math.max(ViewportSize.X * 0.05, 12)
+            local MarginY = math.max(ViewportSize.Y * 0.05, 12)
+            local FitScale = math.min(
+                (ViewportSize.X - MarginX * 2) / WinWidth,
+                (ViewportSize.Y - MarginY * 2) / WinHeight
+            )
+            local MainOffset = (Library.MainWindowScale and tonumber(Library.ScalesOffset[Library.MainWindowScale])) or 0
+            local MaxScaleFactor = FitScale + MainOffset
+
+            if ScaleFactor > MaxScaleFactor then
+                ScaleFactor = MaxScaleFactor
+            end
+        end
+    end
 
     Library.DPIValue = DPIScale
     Library.DPIScale = ScaleFactor
@@ -2906,8 +2935,9 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
 
     --// One shared ring width for every field: searchbar, textboxes,
     --// dropdown search, pickers. Fixed constant so focus looks identical
-    --// everywhere regardless of each stroke's resting thickness. \\--
-    local FocusedThickness = 1
+    --// everywhere regardless of each stroke's resting thickness. 2 reads as
+    --// a deliberate border on phone screens, where 1 washed out. \\--
+    local FocusedThickness = 2
     if Options.FocusedThickness ~= nil then
         FocusedThickness = Options.FocusedThickness
     end
@@ -11289,7 +11319,10 @@ function Library:CreateWindow(WindowInfo)
 
         do
             if ExplicitDPIScale ~= nil then
-                Library.AutoDPIScale = false
+                --// An explicit DPIScale is only the starting multiplier; the
+                --// window still has to fit the screen, so keep auto-fitting on
+                --// until the user drags the scale slider (which clears it). \\--
+                Library.AutoDPIScale = true
                 Library.BaseScale = 1
                 Library:SetDPIScale(ExplicitDPIScale)
             else
@@ -15333,9 +15366,9 @@ function Library:CreateWindow(WindowInfo)
                     })
                     local FlashStroke = New("UIStroke", {
                         Color = Library.Scheme and Library.Scheme.AccentColor or Color3.fromRGB(100, 180, 255),
-                        --// Keep one whole device pixel: on a 0.5-scaled window a 1px
-                        --// stroke lands at half coverage and reads as pale. \\--
-                        Thickness = math.max(1 / MainScaleFactor, 1),
+                        --// Keep the ring readable on scaled UIs: 2px of source
+                        --// thickness, never less than 2 rendered pixels. \\--
+                        Thickness = math.max(2 / MainScaleFactor, 2),
                         Transparency = 0,
                         Parent = FlashOutline,
                     })
