@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix15",
+    BuildId = "virt-fix16",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -400,20 +400,17 @@ Library.CursorZIndexOffset = (DialogContentBandEnd - Library.BaseZIndex) + 2
 Library.CursorZIndex = Library.BaseZIndex + Library.CursorZIndexOffset
 
 if RunService:IsStudio() then
-    if UserInputService.TouchEnabled and not UserInputService.MouseEnabled then
-        Library.IsMobile = true
-        Library.OriginalMinSize = Vector2.new(480, 240)
-    else
-        Library.IsMobile = false
-        Library.OriginalMinSize = Vector2.new(480, 360)
-    end
+    Library.IsMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 else
     pcall(function()
         Library.DevicePlatform = UserInputService:GetPlatform()
     end)
     Library.IsMobile = (Library.DevicePlatform == Enum.Platform.Android or Library.DevicePlatform == Enum.Platform.IOS)
-    Library.OriginalMinSize = Library.IsMobile and Vector2.new(480, 240) or Vector2.new(480, 360)
 end
+
+--// Every platform shares the same base size so the UI is a 1:1 copy of the
+--// desktop layout everywhere; only the uniform scale changes to fit. \\--
+Library.OriginalMinSize = Vector2.new(480, 360)
 
 local Templates = {
 
@@ -16489,8 +16486,6 @@ function Library:CreateLoading(LoadingInfo)
     Library:AddOutline(MainFrame)
     table.insert(Library.Corners, New("UICorner", { CornerRadius = UDim.new(0, Library.CornerRadius), Parent = MainFrame }))
 
-    local MobileOffset = Library.IsMobile and 0.2 or 0
-
     local InitialScale
     if LoadingInfo.DPIScale ~= nil then
         local DPIValue = math.clamp(tonumber(LoadingInfo.DPIScale) or 5, 1, 10)
@@ -16500,9 +16495,9 @@ function Library:CreateLoading(LoadingInfo)
         else
             ScaleFactor = 1.00 + ((DPIValue - 5) / 5) * 0.50
         end
-        InitialScale = ScaleFactor - MobileOffset
+        InitialScale = ScaleFactor
     else
-        InitialScale = (Library.IsMobile and 0.8 or 1)
+        InitialScale = 1
     end
 
     local MainScale = New("UIScale", {
@@ -16510,7 +16505,7 @@ function Library:CreateLoading(LoadingInfo)
         Parent = MainFrame
     })
     table.insert(Library.Scales, MainScale)
-    Library.ScalesOffset[MainScale] = MobileOffset
+    Library.ScalesOffset[MainScale] = 0
 
     local Container = New("Frame", {
         Name = "Content",
