@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix12",
+    BuildId = "virt-fix13",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -15206,7 +15206,26 @@ function Library:CreateWindow(WindowInfo)
                 local function FlashTarget(TargetInst, ExpandX, ExpandY)
                     if not (TargetInst and TargetInst.Parent) then return end
 
-                    local MainScaleFactor = math.max((Library.MainWindowScale and Library.MainWindowScale.Scale) or 1, 0.0001)
+                    --// The ring is built in the window's scaled space, so the true
+                    --// rendered scale matters. Prefer the measured ratio over the
+                    --// UIScale bookkeeping: on mobile the two can disagree, which
+                    --// shifted/scaled the ring away from the element. \\--
+                    local function EffectiveScale(): number
+                        local UiScale = MainFrame:FindFirstChildOfClass("UIScale") or Library.MainWindowScale
+                        local Scale = (UiScale and UiScale.Scale) or Library.DPIScale or 1
+
+                        local SizeX = MainFrame.Size.X
+                        if SizeX.Scale == 0 and SizeX.Offset > 0 then
+                            local Measured = MainFrame.AbsoluteSize.X / SizeX.Offset
+                            if Measured > 0 then
+                                Scale = Measured
+                            end
+                        end
+
+                        return math.max(Scale, 0.0001)
+                    end
+
+                    local MainScaleFactor = EffectiveScale()
                     local Scroller = TargetInst:FindFirstAncestorOfClass("ScrollingFrame")
 
                     --// Window-space frame, re-anchored on scroll. Parenting the
@@ -15219,10 +15238,13 @@ function Library:CreateWindow(WindowInfo)
                         local MainAbsPos = MainFrame.AbsolutePosition
                         local MainAbsSize = MainFrame.AbsoluteSize
 
-                        local RelX  = ((AbsPos.X - MainAbsPos.X) - ExpandX) / MainScaleFactor
-                        local RelY  = ((AbsPos.Y - MainAbsPos.Y) - ExpandY) / MainScaleFactor
-                        local SizeX = (AbsSize.X + ExpandX * 2) / MainScaleFactor
-                        local SizeY = (AbsSize.Y + ExpandY * 2) / MainScaleFactor
+                        --// Convert to the window's units first, then expand. Doing
+                        --// the expansion in screen pixels made the ring grow out of
+                        --// proportion whenever the UI is scaled (mobile ~0.5-0.8). \\--
+                        local RelX  = (AbsPos.X - MainAbsPos.X) / MainScaleFactor - ExpandX
+                        local RelY  = (AbsPos.Y - MainAbsPos.Y) / MainScaleFactor - ExpandY
+                        local SizeX = AbsSize.X / MainScaleFactor + ExpandX * 2
+                        local SizeY = AbsSize.Y / MainScaleFactor + ExpandY * 2
 
                         local MaxX = MainAbsSize.X / MainScaleFactor
                         local MaxY = MainAbsSize.Y / MainScaleFactor
