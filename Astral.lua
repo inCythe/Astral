@@ -247,7 +247,7 @@ do
 end
 
 local Library = {
-    BuildId = "virt-fix13",
+    BuildId = "virt-fix14",
     BuildDate = "2026-10-31",
     SearchVirtualized = true,
 
@@ -1944,6 +1944,24 @@ function Library:FindScaledContainer(UI: Instance): GuiObject?
     return nil
 end
 
+--// Rendered scale of a UI element: the product of every ancestor UIScale.
+--// Strokes and offsets inside that tree are multiplied by it, so 1px of source
+--// ends up thinner than a pixel on mobile (~0.5) and needs compensating. \\--
+function Library:GetUIScale(UI: Instance?): number
+    local Total = 1
+    local Current = UI and UI.Parent
+    while Current and Current ~= game do
+        if Current:IsA("GuiObject") then
+            local UiScale = Current:FindFirstChildOfClass("UIScale")
+            if UiScale then
+                Total *= UiScale.Scale
+            end
+        end
+        Current = Current.Parent
+    end
+    return math.max(Total, 0.0001)
+end
+
 local function SafeParentUI(UI: Instance, Parent: Instance | () -> Instance)
     local success, _error = pcall(function()
         if not Parent then
@@ -2984,11 +3002,25 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
 
         self.Stroke.Color = self:ResolveAccentColor()
         self.Stroke.Transparency = self.FocusedTransparency
-        self.Stroke.Thickness = self.FocusedThickness
+        self.Stroke.Thickness = self:ResolveFocusedThickness()
 
         if self.BackgroundTarget then
             self.BackgroundTarget.BackgroundColor3 = Library:GetBetterColor(self:ResolveRestBackground(), self.BackgroundShift)
         end
+    end
+
+    --// A 1px stroke on a 0.5-scaled mobile window renders as half a pixel, so
+    --// the ring washes out (pale top edge) instead of reading as accent. Keep
+    --// at least one rendered pixel while leaving desktop untouched. \\--
+    function State:ResolveFocusedThickness(): number
+        local Scale = Library:GetUIScale(self.Box)
+        local Base = self.FocusedThickness
+        if Scale >= 0.999 then
+            return Base
+        end
+
+        --// `UIScale` multiplies the stroke, so divide to land on one device px.
+        return math.max(Base / Scale, Base)
     end
 
     function State:Apply(Focused: boolean)
@@ -3002,7 +3034,7 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
             self:SetZBoost(true)
             TweenService:Create(self.Stroke, Library.TweenInfo, {
                 Color = self:ResolveAccentColor(),
-                Thickness = self.FocusedThickness,
+                Thickness = self:ResolveFocusedThickness(),
                 Transparency = self.FocusedTransparency,
             }):Play()
 
@@ -3035,6 +3067,19 @@ function Library:AddFocusHighlight(Box, Stroke: UIStroke?, Options: { [string]: 
     Library:GiveSignal(Box.FocusLost:Connect(function()
         State:Apply(false)
     end))
+
+    --// Mobile scale is applied/resolved after the widget exists, so the ring
+    --// thickness has to be recomputed when the DPI scale changes. \\--
+    if not Library.FocusHighlightScaleHooked then
+        Library.FocusHighlightScaleHooked = true
+        Library:GiveDPIScaleCallback(function()
+            for _, Highlight in Library.FocusHighlights do
+                if Highlight.Focused then
+                    Highlight:Reapply()
+                end
+            end
+        end)
+    end
 
     return State
 end
@@ -15246,6 +15291,18 @@ function Library:CreateWindow(WindowInfo)
                         local SizeX = AbsSize.X / MainScaleFactor + ExpandX * 2
                         local SizeY = AbsSize.Y / MainScaleFactor + ExpandY * 2
 
+                        --// Snap the ring to whole device pixels. A half-pixel edge
+                        --// antialiases into a washed-out line (the "pale top border"
+                        --// seen on phones), while the other edges look solid. \\--
+                        local DevX0 = math.floor(MainAbsPos.X + RelX * MainScaleFactor + 0.5)
+                        local DevY0 = math.floor(MainAbsPos.Y + RelY * MainScaleFactor + 0.5)
+                        local DevX1 = math.floor(MainAbsPos.X + (RelX + SizeX) * MainScaleFactor + 0.5)
+                        local DevY1 = math.floor(MainAbsPos.Y + (RelY + SizeY) * MainScaleFactor + 0.5)
+                        RelX  = (DevX0 - MainAbsPos.X) / MainScaleFactor
+                        RelY  = (DevY0 - MainAbsPos.Y) / MainScaleFactor
+                        SizeX = (DevX1 - DevX0) / MainScaleFactor
+                        SizeY = (DevY1 - DevY0) / MainScaleFactor
+
                         local MaxX = MainAbsSize.X / MainScaleFactor
                         local MaxY = MainAbsSize.Y / MainScaleFactor
                         local ClampX0 = math.max(RelX, 0)
@@ -15276,7 +15333,9 @@ function Library:CreateWindow(WindowInfo)
                     })
                     local FlashStroke = New("UIStroke", {
                         Color = Library.Scheme and Library.Scheme.AccentColor or Color3.fromRGB(100, 180, 255),
-                        Thickness = 1,
+                        --// Keep one whole device pixel: on a 0.5-scaled window a 1px
+                        --// stroke lands at half coverage and reads as pale. \\--
+                        Thickness = math.max(1 / MainScaleFactor, 1),
                         Transparency = 0,
                         Parent = FlashOutline,
                     })
