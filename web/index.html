@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Astral — Web Preview</title>
+        <meta
+            name="description"
+            content="Browser preview of the Astral Roblox UI library. No client, no Studio, no executor."
+        />
+        <link rel="stylesheet" href="astral.css" />
+    </head>
+    <body>
+        <div class="app">
+            <header class="toolbar">
+                <div class="brand">
+                    Astral
+                    <small>web preview — no Roblox required</small>
+                </div>
+
+                <div class="controls-group" role="group" aria-label="Device">
+                    <span>Device</span>
+                    <button class="pill" type="button" data-device="1440x900" aria-pressed="true">Desktop</button>
+                    <button class="pill" type="button" data-device="932x430" aria-pressed="false">Phone landscape</button>
+                    <button class="pill" type="button" data-device="430x932" aria-pressed="false">Phone portrait</button>
+                </div>
+
+                <div class="readout" id="readout"></div>
+            </header>
+
+            <div class="stage-wrap">
+                <div class="stage" id="stage">
+                    <div id="astral-root"></div>
+                </div>
+            </div>
+        </div>
+
+        <script src="icons.js"></script>
+        <script src="window-spec.js"></script>
+        <script src="astral.js"></script>
+    </body>
+</html>
